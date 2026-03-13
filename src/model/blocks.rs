@@ -44,7 +44,8 @@ impl ConvBlock {
 }
 
 // ---------------------------------------------------------------------------
-// Bottleneck: cv1(c1→c2, k[0]) + cv2(c2→c2, k[1]) with optional residual
+// Bottleneck: cv1(c1→c_hidden, k[0]) + cv2(c_hidden→c2, k[1]) with optional residual
+// c_hidden = c2 * expansion (Python Bottleneck default e=0.5)
 // ---------------------------------------------------------------------------
 
 pub struct Bottleneck {
@@ -60,9 +61,11 @@ impl Bottleneck {
         c_out: usize,
         has_shortcut: bool,
         k: (usize, usize),
+        expansion: f32,
     ) -> Result<Self> {
-        let cv1: ConvBlock = ConvBlock::load(vb.pp("cv1"), c_in, c_out, k.0, 1, 1, true)?;
-        let cv2: ConvBlock = ConvBlock::load(vb.pp("cv2"), c_out, c_out, k.1, 1, 1, true)?;
+        let c_hidden: usize = (c_out as f32 * expansion) as usize;
+        let cv1: ConvBlock = ConvBlock::load(vb.pp("cv1"), c_in, c_hidden, k.0, 1, 1, true)?;
+        let cv2: ConvBlock = ConvBlock::load(vb.pp("cv2"), c_hidden, c_out, k.1, 1, 1, true)?;
         let has_shortcut: bool = has_shortcut && c_in == c_out;
         Ok(Self {
             cv1,
@@ -83,20 +86,15 @@ impl Bottleneck {
 
 // ---------------------------------------------------------------------------
 // C3k: C3 variant with k=3 bottleneck kernels
-// cv1(c1→c_, 1×1), cv2(c1→c_, 1×1), m = Sequential(Bottleneck(c_,c_,k=3)), cv3(2*c_→c2, 1×1)
-// Optionally, m can be replaced by a PsaBlock (when parent C3k2 has attn=True)
+// cv1(c1→c_, 1×1), cv2(c1→c_, 1×1), m = Sequential(Bottleneck(c_,c_,e=1.0,k=3)), cv3(2*c_→c2, 1×1)
+// c_ = c_out * 0.5 (C3k default e=0.5)
 // ---------------------------------------------------------------------------
-
-pub enum C3kInternal {
-    Bottlenecks(Vec<Bottleneck>),
-    Psa(PsaBlock),
-}
 
 pub struct C3k {
     cv1: ConvBlock,
     cv2: ConvBlock,
     cv3: ConvBlock,
-    m: C3kInternal,
+    m: Vec<Bottleneck>,
 }
 
 impl C3k {
@@ -106,49 +104,40 @@ impl C3k {
         c_out: usize,
         n: usize,
         has_shortcut: bool,
-        use_psa: bool,
     ) -> Result<Self> {
-        // C3's hidden channels: c_ = c_out * e, where e=1.0 for C3k
-        let c_hidden: usize = c_out;
+        // C3k uses e=0.5 (default from Python C3k(C3) class)
+        let c_hidden: usize = c_out / 2;
         let cv1: ConvBlock = ConvBlock::load(vb.pp("cv1"), c_in, c_hidden, 1, 1, 1, true)?;
         let cv2: ConvBlock = ConvBlock::load(vb.pp("cv2"), c_in, c_hidden, 1, 1, 1, true)?;
         let cv3: ConvBlock = ConvBlock::load(vb.pp("cv3"), 2 * c_hidden, c_out, 1, 1, 1, true)?;
 
-        let m: C3kInternal = if use_psa {
-            // When attn=True in parent C3k2, m is replaced by a single PSABlock
-            let num_heads: usize = (c_hidden / 64).max(1);
-            let psa: PsaBlock = PsaBlock::load(vb.pp("m"), c_hidden, num_heads)?;
-            C3kInternal::Psa(psa)
-        } else {
-            let mut bottlenecks: Vec<Bottleneck> = Vec::with_capacity(n);
-            for i in 0..n {
-                let b: Bottleneck = Bottleneck::load(
-                    vb.pp("m").pp(i.to_string()),
-                    c_hidden,
-                    c_hidden,
-                    has_shortcut,
-                    (3, 3),
-                )?;
-                bottlenecks.push(b);
-            }
-            C3kInternal::Bottlenecks(bottlenecks)
-        };
+        // Inner Bottlenecks use e=1.0 explicitly (from C3k source)
+        let mut bottlenecks: Vec<Bottleneck> = Vec::with_capacity(n);
+        for i in 0..n {
+            let b: Bottleneck = Bottleneck::load(
+                vb.pp("m").pp(i.to_string()),
+                c_hidden,
+                c_hidden,
+                has_shortcut,
+                (3, 3),
+                1.0,
+            )?;
+            bottlenecks.push(b);
+        }
 
-        Ok(Self { cv1, cv2, cv3, m })
+        Ok(Self {
+            cv1,
+            cv2,
+            cv3,
+            m: bottlenecks,
+        })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let a: Tensor = self.cv1.forward(x)?;
-        let a: Tensor = match &self.m {
-            C3kInternal::Bottlenecks(bns) => {
-                let mut y: Tensor = a;
-                for bn in bns {
-                    y = bn.forward(&y)?;
-                }
-                y
-            }
-            C3kInternal::Psa(psa) => psa.forward(&a)?,
-        };
+        let mut a: Tensor = self.cv1.forward(x)?;
+        for bn in &self.m {
+            a = bn.forward(&a)?;
+        }
         let b: Tensor = self.cv2.forward(x)?;
         let cat: Tensor = Tensor::cat(&[&a, &b], 1)?;
         self.cv3.forward(&cat)
@@ -156,14 +145,43 @@ impl C3k {
 }
 
 // ---------------------------------------------------------------------------
+// AttnBranch: nn.Sequential(Bottleneck(e=0.5), PSABlock)
+// Used by C3k2 when attn=True. Weight keys: m.{i}.0.* (Bottleneck), m.{i}.1.* (PSABlock)
+// ---------------------------------------------------------------------------
+
+pub struct AttnBranch {
+    bottleneck: Bottleneck,
+    psa: PsaBlock,
+}
+
+impl AttnBranch {
+    pub fn load(vb: VarBuilder, c: usize, has_shortcut: bool) -> Result<Self> {
+        // Index 0 in nn.Sequential → Bottleneck with default e=0.5
+        let bottleneck: Bottleneck = Bottleneck::load(vb.pp("0"), c, c, has_shortcut, (3, 3), 0.5)?;
+        // Index 1 in nn.Sequential → PSABlock
+        let num_heads: usize = (c / 64).max(1);
+        let psa: PsaBlock = PsaBlock::load(vb.pp("1"), c, num_heads)?;
+        Ok(Self { bottleneck, psa })
+    }
+
+    pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let y: Tensor = self.bottleneck.forward(x)?;
+        self.psa.forward(&y)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // C3k2: C2f variant with configurable branch type
 // cv1(c1→2*c_, 1×1) → split → n branches → cv2((2+n)*c_→c2, 1×1)
-// Branches: Bottleneck (c3k=false) or C3k (c3k=true)
+// When attn=True: AttnBranch (takes priority over c3k)
+// When c3k=True: C3k
+// Otherwise: Bottleneck(e=0.5)
 // ---------------------------------------------------------------------------
 
 pub enum C3k2Branch {
     BottleneckBranch(Bottleneck),
     C3kBranch(C3k),
+    AttnBranch(AttnBranch),
 }
 
 impl C3k2Branch {
@@ -171,6 +189,7 @@ impl C3k2Branch {
         match self {
             C3k2Branch::BottleneckBranch(b) => b.forward(x),
             C3k2Branch::C3kBranch(c) => c.forward(x),
+            C3k2Branch::AttnBranch(a) => a.forward(x),
         }
     }
 }
@@ -200,25 +219,29 @@ impl C3k2 {
 
         let mut branches: Vec<C3k2Branch> = Vec::with_capacity(n);
         for i in 0..n {
-            // Last branch gets PSABlock when attn=True and c3k=True
-            let use_psa: bool = has_attn && is_c3k && i == n - 1;
-            let branch: C3k2Branch = if is_c3k {
+            // attn=True takes priority over c3k (matches Python C3k2.__init__ order)
+            let branch: C3k2Branch = if has_attn {
+                let a: AttnBranch =
+                    AttnBranch::load(vb.pp("m").pp(i.to_string()), c_hidden, has_shortcut)?;
+                C3k2Branch::AttnBranch(a)
+            } else if is_c3k {
                 let c3k: C3k = C3k::load(
                     vb.pp("m").pp(i.to_string()),
                     c_hidden,
                     c_hidden,
                     2,
                     has_shortcut,
-                    use_psa,
                 )?;
                 C3k2Branch::C3kBranch(c3k)
             } else {
+                // Default Bottleneck with e=0.5
                 let b: Bottleneck = Bottleneck::load(
                     vb.pp("m").pp(i.to_string()),
                     c_hidden,
                     c_hidden,
                     has_shortcut,
                     (3, 3),
+                    0.5,
                 )?;
                 C3k2Branch::BottleneckBranch(b)
             };
@@ -496,17 +519,29 @@ mod tests {
     fn test_bottleneck_shape() {
         let device = Device::Cpu;
         let vb = test_vb(&device);
-        let b = Bottleneck::load(vb.pp("test"), 64, 64, true, (3, 3)).unwrap();
+        // e=1.0: c_hidden = c_out, matching C3k's internal bottleneck
+        let b = Bottleneck::load(vb.pp("test"), 64, 64, true, (3, 3), 1.0).unwrap();
         let x = Tensor::zeros((1, 64, 40, 40), DType::F32, &device).unwrap();
         let y = b.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 64, 40, 40]);
     }
 
     #[test]
+    fn test_bottleneck_with_expansion() {
+        let device = Device::Cpu;
+        let vb = test_vb(&device);
+        // e=0.5: c_hidden = c_out * 0.5, matching C3k2's direct Bottleneck
+        let b = Bottleneck::load(vb.pp("test"), 32, 32, true, (3, 3), 0.5).unwrap();
+        let x = Tensor::zeros((1, 32, 40, 40), DType::F32, &device).unwrap();
+        let y = b.forward(&x).unwrap();
+        assert_eq!(y.dims(), &[1, 32, 40, 40]);
+    }
+
+    #[test]
     fn test_bottleneck_no_shortcut() {
         let device = Device::Cpu;
         let vb = test_vb(&device);
-        let b = Bottleneck::load(vb.pp("test"), 64, 32, false, (3, 3)).unwrap();
+        let b = Bottleneck::load(vb.pp("test"), 64, 32, false, (3, 3), 1.0).unwrap();
         let x = Tensor::zeros((1, 64, 40, 40), DType::F32, &device).unwrap();
         let y = b.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 32, 40, 40]);
@@ -527,7 +562,7 @@ mod tests {
     fn test_c3k_shape() {
         let device = Device::Cpu;
         let vb = test_vb(&device);
-        let c = C3k::load(vb.pp("test"), 128, 128, 2, true, false).unwrap();
+        let c = C3k::load(vb.pp("test"), 128, 128, 2, true).unwrap();
         let x = Tensor::zeros((1, 128, 20, 20), DType::F32, &device).unwrap();
         let y = c.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 128, 20, 20]);
@@ -593,6 +628,16 @@ mod tests {
         let x = Tensor::zeros((1, 256, 20, 20), DType::F32, &device).unwrap();
         let y = c.forward(&x).unwrap();
         assert_eq!(y.dims(), &[1, 256, 20, 20]);
+    }
+
+    #[test]
+    fn test_attn_branch_shape() {
+        let device = Device::Cpu;
+        let vb = test_vb(&device);
+        let a = AttnBranch::load(vb.pp("test"), 128, true).unwrap();
+        let x = Tensor::zeros((1, 128, 20, 20), DType::F32, &device).unwrap();
+        let y = a.forward(&x).unwrap();
+        assert_eq!(y.dims(), &[1, 128, 20, 20]);
     }
 
     #[test]
