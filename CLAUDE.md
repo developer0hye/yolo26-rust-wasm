@@ -92,3 +92,9 @@ Follow all steps in order:
 
 - When creating a GitHub Release, include a **Contributors** section crediting all external contributors since the previous release.
 - Use `git log <prev-tag>..HEAD --format='%an' | sort -u` to find contributors. List each with their GitHub profile link and a brief summary of their contribution.
+
+## Project-Specific References
+
+- **YOLO26 architecture source**: `references/ultralytics/` (cloned ultralytics repo). Key files: `ultralytics/cfg/models/26/yolo26.yaml`, `ultralytics/nn/modules/block.py`, `ultralytics/nn/modules/head.py`, `ultralytics/nn/modules/conv.py`.
+- **Candle YOLOv8 WASM example**: `huggingface/candle` repo → `candle-wasm-examples/yolo/` and `candle-examples/examples/yolo-v8/model.rs`. Base for YOLO26 candle implementation.
+- See `references/INDEX.md` for full reference project index.
