@@ -1,4 +1,4 @@
-use candle_core::{DType, Device, Module, Result, Tensor};
+use candle_core::{Device, Module, Result, Tensor};
 use candle_nn::{conv2d, Conv2dConfig, VarBuilder};
 
 use super::blocks::ConvBlock;
@@ -261,6 +261,7 @@ fn dist2bbox_xyxy(distance: &Tensor, anchors: &Tensor) -> Result<Tensor> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candle_core::DType;
     use candle_nn::VarMap;
 
     #[test]

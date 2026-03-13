@@ -8,7 +8,7 @@
 //!   1. weights/yolo26n.safetensors (run scripts/download_model.sh)
 //!   2. tests/fixtures/* (run python3 scripts/generate_test_fixtures.py)
 
-use candle_core::{DType, Device, Tensor};
+use candle_core::{Device, Tensor};
 use std::path::Path;
 
 const WEIGHTS_PATH: &str = "weights/yolo26n.safetensors";

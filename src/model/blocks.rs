@@ -203,7 +203,6 @@ pub struct C3k2 {
     cv1: ConvBlock,
     cv2: ConvBlock,
     branches: Vec<C3k2Branch>,
-    c_hidden: usize,
 }
 
 impl C3k2 {
@@ -253,12 +252,7 @@ impl C3k2 {
             branches.push(branch);
         }
 
-        Ok(Self {
-            cv1,
-            cv2,
-            branches,
-            c_hidden,
-        })
+        Ok(Self { cv1, cv2, branches })
     }
 
     pub fn forward(&self, x: &Tensor) -> Result<Tensor> {
