@@ -53,7 +53,7 @@ crate-type = ["cdylib", "rlib"]
 wasm-bindgen = "0.2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tract-onnx = "0.21"
+tract-onnx = { version = "0.21", features = ["getrandom-js"] }
 console_error_panic_hook = "0.1"
 web-sys = { version = "0.3", features = ["console"] }
 getrandom = { version = "0.2", features = ["js"] }
@@ -138,6 +138,14 @@ Expected: Success (no errors)
 
 Run: `wasm-pack build --target web --dev`
 Expected: Success, `pkg/` directory created with `.wasm` file
+
+**RISK CHECK — tract + wasm-bindgen compatibility:**
+tract's `inventory` crate may crash under wasm-bindgen at runtime (see [sonos/tract#2001](https://github.com/sonos/tract/issues/2001)).
+If the WASM build succeeds but crashes at runtime in the browser with an indirect call error,
+the fallback is to switch to **rten** (lightweight ONNX runtime with native WASM support):
+- Replace `tract-onnx` with `rten = "0.14"` in Cargo.toml
+- Adapt `model.rs` to use rten's API (similar pattern: load bytes → run inference)
+- Postprocessing remains the same (tensor output format is model-dependent, not runtime-dependent)
 
 - [ ] **Step 9: Run formatter and commit**
 
@@ -1821,8 +1829,8 @@ Expected: All unit tests pass
 
 - [ ] **Step 2: Run WASM release build**
 
-Run: `wasm-pack build --target web --release`
-Expected: Success
+Run: `RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --target web --release`
+Expected: Success. SIMD flag enables WASM SIMD128 for ~2.6x inference speedup.
 
 - [ ] **Step 3: Verify .gitignore is complete**
 
