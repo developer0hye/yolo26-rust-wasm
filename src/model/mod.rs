@@ -36,6 +36,16 @@ impl Yolo26Model {
         })
     }
 
+    /// Construct from pre-built parts (for testing with VarMap).
+    #[cfg(test)]
+    pub fn new_from_parts(backbone: Backbone, neck: Neck, head: Detect) -> Self {
+        Self {
+            backbone,
+            neck,
+            head,
+        }
+    }
+
     /// Run forward pass: input [1, 3, 640, 640] → output [1, 300, 6]
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let bb = self.backbone.forward(input)?;
