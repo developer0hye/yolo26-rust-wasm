@@ -9,7 +9,7 @@
 
 ## Project Formatter Commands
 
-- Primary command: `<set-this-for-your-project>`
+- Primary command: `cargo fmt --all`
 
 ## Fallback by Language
 
