@@ -51,9 +51,9 @@ def letterbox_preprocess(
     pad_x = (target_size - new_w) // 2
     pad_y = (target_size - new_h) // 2
 
-    # Nearest-neighbor resize (matches Rust implementation)
+    # Bilinear resize (matches Rust implementation)
     pil_img = Image.fromarray(img_array)
-    resized = pil_img.resize((new_w, new_h), Image.NEAREST)
+    resized = pil_img.resize((new_w, new_h), Image.BILINEAR)
     resized_array = np.array(resized)
 
     # Padded canvas with value 114 (matches Rust pad_value = 114.0/255.0)
