@@ -28,7 +28,12 @@ impl ConvBlock {
             ..Default::default()
         };
         let conv: Conv2d = conv2d_no_bias(c_in, c_out, kernel_size, cfg, vb.pp("conv"))?;
-        let bn = batch_norm(c_out, BatchNormConfig::default(), vb.pp("bn"))?;
+        // ultralytics uses eps=0.001 and momentum=0.03 for BatchNorm
+        let bn_cfg = BatchNormConfig {
+            eps: 1e-3,
+            ..Default::default()
+        };
+        let bn = batch_norm(c_out, bn_cfg, vb.pp("bn"))?;
         let conv: Conv2d = conv.absorb_bn(&bn)?;
         Ok(Self { conv, is_activated })
     }
@@ -276,6 +281,9 @@ impl C3k2 {
 // cv1(c1→c1, 1×1, act=false) → n sequential MaxPool2d(k, s=1, p=k/2) → cat → cv2 → + shortcut
 // ---------------------------------------------------------------------------
 
+/// Ultralytics SPPF: Spatial Pyramid Pooling Fast.
+/// cv1(c1→c_, 1×1, act=False) → n sequential MaxPool2d(k, s=1, p=k/2)
+/// → cat(x, y1, ..., yn) → cv2((n+1)*c_→c2, 1×1) [+ shortcut if has_shortcut && c1==c2]
 pub struct Sppf {
     cv1: ConvBlock,
     cv2: ConvBlock,
@@ -293,11 +301,18 @@ impl Sppf {
         pool_count: usize,
         has_shortcut: bool,
     ) -> Result<Self> {
-        // cv1: c1→c1 with act=false
-        let cv1: ConvBlock = ConvBlock::load(vb.pp("cv1"), c_in, c_in, 1, 1, 1, false)?;
-        // cv2: c1*(pool_count+1) → c2
-        let cv2: ConvBlock =
-            ConvBlock::load(vb.pp("cv2"), c_in * (pool_count + 1), c_out, 1, 1, 1, true)?;
+        let c_hidden: usize = c_in / 2;
+        // ultralytics SPPF: cv1 has act=False, cv2 has default act=True (SiLU)
+        let cv1: ConvBlock = ConvBlock::load(vb.pp("cv1"), c_in, c_hidden, 1, 1, 1, false)?;
+        let cv2: ConvBlock = ConvBlock::load(
+            vb.pp("cv2"),
+            c_hidden * (pool_count + 1),
+            c_out,
+            1,
+            1,
+            1,
+            true,
+        )?;
         let has_shortcut: bool = has_shortcut && c_in == c_out;
         Ok(Self {
             cv1,
@@ -310,26 +325,49 @@ impl Sppf {
 
     pub fn forward(&self, input: &Tensor) -> Result<Tensor> {
         let x: Tensor = self.cv1.forward(input)?;
-        let mut pools: Vec<Tensor> = vec![x.clone()];
-        let mut current: Tensor = x;
 
+        // n sequential maxpool operations with -inf padding (not zero)
+        let mut pools: Vec<Tensor> = Vec::with_capacity(self.pool_count + 1);
+        pools.push(x);
         for _ in 0..self.pool_count {
-            // Pad with zeros then maxpool (approximates -inf padding)
-            let pad: usize = self.kernel_size / 2;
-            let padded: Tensor = current.pad_with_zeros(2, pad, pad)?;
-            let padded: Tensor = padded.pad_with_zeros(3, pad, pad)?;
-            current = padded.max_pool2d_with_stride(self.kernel_size, 1)?;
-            pools.push(current.clone());
+            let prev: &Tensor = pools.last().unwrap();
+            pools.push(maxpool2d_padded(prev, self.kernel_size)?);
         }
 
-        let cat: Tensor = Tensor::cat(&pools.iter().collect::<Vec<_>>(), 1)?;
+        let refs: Vec<&Tensor> = pools.iter().collect();
+        let cat: Tensor = Tensor::cat(&refs, 1)?;
         let out: Tensor = self.cv2.forward(&cat)?;
         if self.has_shortcut {
-            input + out
+            &out + input
         } else {
             Ok(out)
         }
     }
+}
+
+/// MaxPool2d with -inf padding (not zero padding).
+/// candle's max_pool2d has no padding parameter, so we manually pad with -inf
+/// to match PyTorch's MaxPool2d(kernel_size, stride=1, padding=kernel_size//2).
+/// Zero-padding is wrong for maxpool because zeros beat negative activations.
+fn maxpool2d_padded(x: &Tensor, kernel_size: usize) -> Result<Tensor> {
+    let pad: usize = kernel_size / 2;
+    let (b, c, h, w) = x.dims4()?;
+    let device: &candle_core::Device = x.device();
+
+    // Tensor::full returns a broadcasted (non-contiguous) tensor.
+    // Call .contiguous() so that Tensor::cat operates on real storage.
+    let top: Tensor = Tensor::full(f32::NEG_INFINITY, (b, c, pad, w), device)?.contiguous()?;
+    let bottom: Tensor = Tensor::full(f32::NEG_INFINITY, (b, c, pad, w), device)?.contiguous()?;
+    let x: Tensor = Tensor::cat(&[&top, x, &bottom], 2)?; // [B, C, H+2*pad, W]
+
+    let h_padded: usize = h + 2 * pad;
+    let left: Tensor =
+        Tensor::full(f32::NEG_INFINITY, (b, c, h_padded, pad), device)?.contiguous()?;
+    let right: Tensor =
+        Tensor::full(f32::NEG_INFINITY, (b, c, h_padded, pad), device)?.contiguous()?;
+    let x: Tensor = Tensor::cat(&[&left, &x, &right], 3)?; // [B, C, H+2*pad, W+2*pad]
+
+    x.max_pool2d_with_stride(kernel_size, 1)
 }
 
 // ---------------------------------------------------------------------------
