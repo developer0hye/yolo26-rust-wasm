@@ -53,6 +53,14 @@ impl Yolo26Model {
         self.head
             .forward(&[&neck_out.small, &neck_out.medium, &neck_out.large])
     }
+
+    /// Return pre-topk decoded output [B, N, 84] for comparison testing.
+    pub fn forward_pre_topk(&self, input: &Tensor) -> Result<Tensor> {
+        let bb = self.backbone.forward(input)?;
+        let neck_out = self.neck.forward(&bb)?;
+        self.head
+            .forward_pre_topk(&[&neck_out.small, &neck_out.medium, &neck_out.large])
+    }
 }
 
 #[cfg(test)]

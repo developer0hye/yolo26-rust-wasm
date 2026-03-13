@@ -122,6 +122,47 @@ impl Detect {
         self.topk_postprocess(&y, batch_size)
     }
 
+    /// Return pre-topk decoded output [B, N, 4+nc] for comparison testing.
+    /// This is the concatenated decoded boxes + sigmoid scores before topk selection.
+    pub fn forward_pre_topk(&self, features: &[&Tensor]) -> Result<Tensor> {
+        let device: &Device = features[0].device();
+        let batch_size: usize = features[0].dim(0)?;
+
+        let mut all_boxes: Vec<Tensor> = Vec::new();
+        let mut all_scores: Vec<Tensor> = Vec::new();
+        let mut feat_sizes: Vec<(usize, usize)> = Vec::new();
+
+        for (i, feat) in features.iter().enumerate() {
+            let (_, _, h, w) = feat.dims4()?;
+            feat_sizes.push((h, w));
+
+            let bx = self.box_branches[i].cv0.forward(feat)?;
+            let bx = self.box_branches[i].cv1.forward(&bx)?;
+            let bx = self.box_branches[i].cv2.forward(&bx)?;
+            let bx = bx.reshape((batch_size, 4, h * w))?;
+            all_boxes.push(bx);
+
+            let cx = self.cls_branches[i].dw0.forward(feat)?;
+            let cx = self.cls_branches[i].cv0.forward(&cx)?;
+            let cx = self.cls_branches[i].dw1.forward(&cx)?;
+            let cx = self.cls_branches[i].cv1.forward(&cx)?;
+            let cx = self.cls_branches[i].cv2.forward(&cx)?;
+            let cx = cx.reshape((batch_size, self.nc, h * w))?;
+            all_scores.push(cx);
+        }
+
+        let boxes = Tensor::cat(&all_boxes.iter().collect::<Vec<_>>(), 2)?;
+        let scores = Tensor::cat(&all_scores.iter().collect::<Vec<_>>(), 2)?;
+
+        let (anchors, stride_tensor) = make_anchors(&feat_sizes, &self.strides, device)?;
+        let dbox = dist2bbox_xyxy(&boxes, &anchors)?;
+        let dbox = dbox.broadcast_mul(&stride_tensor)?;
+        let cls_scores = candle_nn::ops::sigmoid(&scores)?;
+
+        let y = Tensor::cat(&[&dbox, &cls_scores], 1)?;
+        y.transpose(1, 2) // [B, N, 84]
+    }
+
     fn topk_postprocess(&self, preds: &Tensor, batch_size: usize) -> Result<Tensor> {
         // preds: [B, N, 84] where N=8400
         let n_anchors: usize = preds.dim(1)?;
