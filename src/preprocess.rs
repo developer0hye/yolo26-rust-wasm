@@ -11,7 +11,7 @@ pub struct LetterboxInfo {
 
 /// Convert RGBA pixels to model input tensor [1, 3, 640, 640] with letterbox transform.
 ///
-/// Steps: RGBA→RGB, nearest-neighbor resize, letterbox pad, normalize [0,1], HWC→CHW.
+/// Steps: RGBA→RGB, bilinear resize, letterbox pad, normalize [0,1], HWC→CHW.
 pub fn preprocess(
     rgba: &[u8],
     width: u32,
@@ -34,21 +34,49 @@ pub fn preprocess(
     let channel_size: usize = target * target;
     let mut chw_buf: Vec<f32> = vec![LETTERBOX_PAD_VALUE; 3 * channel_size];
 
-    // Nearest-neighbor resize + RGBA→RGB + normalize, writing directly into CHW layout
+    // Bilinear resize + RGBA→RGB + normalize, writing directly into CHW layout
+    let w_f32: f32 = w as f32;
+    let h_f32: f32 = h as f32;
+    let new_w_f32: f32 = new_w as f32;
+    let new_h_f32: f32 = new_h as f32;
+
     for dst_y in 0..new_h {
-        let src_y: usize = (dst_y * h / new_h).min(h - 1);
+        // Map destination pixel center to source coordinates
+        let src_y_f: f32 = (dst_y as f32 + 0.5) * h_f32 / new_h_f32 - 0.5;
+        let y0: usize = (src_y_f.floor() as isize).max(0) as usize;
+        let y1: usize = (y0 + 1).min(h - 1);
+        let fy: f32 = src_y_f - y0 as f32;
+        let fy: f32 = fy.max(0.0); // clamp for edge pixels
+
         for dst_x in 0..new_w {
-            let src_x: usize = (dst_x * w / new_w).min(w - 1);
-            let src_idx: usize = (src_y * w + src_x) * 4;
+            let src_x_f: f32 = (dst_x as f32 + 0.5) * w_f32 / new_w_f32 - 0.5;
+            let x0: usize = (src_x_f.floor() as isize).max(0) as usize;
+            let x1: usize = (x0 + 1).min(w - 1);
+            let fx: f32 = src_x_f - x0 as f32;
+            let fx: f32 = fx.max(0.0);
+
             let out_y: usize = dst_y + pad_y_int;
             let out_x: usize = dst_x + pad_x_int;
             let out_pos: usize = out_y * target + out_x;
 
-            // RGB channels normalized to [0, 1]
-            chw_buf[out_pos] = rgba[src_idx] as f32 / 255.0; // R
-            chw_buf[channel_size + out_pos] = rgba[src_idx + 1] as f32 / 255.0; // G
-            chw_buf[2 * channel_size + out_pos] = rgba[src_idx + 2] as f32 / 255.0;
-            // B
+            // Bilinear interpolation for each RGB channel
+            let idx00: usize = (y0 * w + x0) * 4;
+            let idx01: usize = (y0 * w + x1) * 4;
+            let idx10: usize = (y1 * w + x0) * 4;
+            let idx11: usize = (y1 * w + x1) * 4;
+
+            let w00: f32 = (1.0 - fx) * (1.0 - fy);
+            let w01: f32 = fx * (1.0 - fy);
+            let w10: f32 = (1.0 - fx) * fy;
+            let w11: f32 = fx * fy;
+
+            for c in 0..3 {
+                let val: f32 = rgba[idx00 + c] as f32 * w00
+                    + rgba[idx01 + c] as f32 * w01
+                    + rgba[idx10 + c] as f32 * w10
+                    + rgba[idx11 + c] as f32 * w11;
+                chw_buf[c * channel_size + out_pos] = val / 255.0;
+            }
         }
     }
 
