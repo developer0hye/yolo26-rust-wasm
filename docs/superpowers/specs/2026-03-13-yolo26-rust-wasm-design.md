@@ -44,9 +44,11 @@ Canvas 2D rendering (bounding boxes + class labels + confidence)
 
 ## 3. Technology Choices
 
+**Why tract instead of candle (PRD priority 1)?** YOLO26 has no native candle implementation — building the full architecture from scratch in candle would be high effort with uncertain timeline. The ONNX path via tract avoids this entirely: export from ultralytics and run directly. This trades the pure-SafeTensors path for a much faster time-to-working-demo.
+
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Inference runtime | tract | Mature pure-Rust ONNX runtime with proven WASM support, wide operator coverage |
+| Inference runtime | tract (not candle) | Candle lacks YOLO26 architecture; tract loads ONNX directly, avoiding custom model implementation |
 | Model format | ONNX | Direct export from ultralytics, avoids custom architecture implementation |
 | Model loading (Phase 1) | JS `fetch` → pass bytes to WASM | Simple, allows CDN caching, decoupled from WASM binary size |
 | Image decoding | Browser Canvas API | Supports all image formats natively, avoids `image` crate bloating WASM binary (~1MB saved) |
@@ -176,7 +178,7 @@ impl YoloModel {
 }
 ```
 
-Global model state stored in a `thread_local!` or `OnceCell` for WASM (single-threaded).
+Global model state stored in `std::cell::OnceCell` (single-threaded WASM — no need for `thread_local!`).
 
 ## 8. HTML UI (`index.html`)
 
@@ -222,6 +224,21 @@ Global model state stored in a `thread_local!` or `OnceCell` for WASM (single-th
 - Label: colored background rect + white text `"class_name confidence%"` above box
 - Canvas resolution = original image size; CSS scales to container
 
+### Confidence Slider
+
+- Range: `min=0.05, max=1.0, step=0.05, default=0.25` (per PRD US-3)
+- Current value displayed next to slider
+- Changes filter cached detections in JS — no WASM re-invocation
+
+### Error Handling (JS side)
+
+All errors display in the status area:
+- Model fetch failure (network/404): "Failed to load model: [error]"
+- Invalid ONNX / tract load error: "Failed to initialize model: [error]"
+- `detect` called before `init_model`: "Model not loaded yet"
+- WASM detect error: "Detection failed: [error]"
+- Image too large: JS resizes to max 4096px before passing to WASM
+
 ### User Flow
 
 1. **Page load**: Load WASM → fetch ONNX model → `init_model(bytes)` → status "Model loaded (X.X MB)"
@@ -239,7 +256,8 @@ yolo26-rust-wasm/
 │   ├── preprocess.rs           # image preprocessing pipeline
 │   └── postprocess.rs          # output parsing, coord transform, JSON serialization
 ├── scripts/
-│   └── download_model.sh       # Download YOLO26n ONNX from known URL
+│   └── download_model.sh       # Downloads YOLO26n ONNX via ultralytics Python CLI
+│                                # Fallback: manual export instructions in README
 ├── weights/                    # .gitignore'd
 │   └── yolo26n.onnx
 ├── index.html                  # Demo UI (single file)
@@ -259,6 +277,7 @@ yolo26-rust-wasm/
 | `tract-onnx` | ONNX model loading and inference |
 | `wasm-bindgen` | Rust ↔ JS FFI for WASM |
 | `serde` + `serde_json` | Detection struct serialization to JSON |
+| `console_error_panic_hook` | Readable panic messages in browser console (essential for WASM debugging) |
 | `web-sys` | Access to `console::log` for WASM logging (optional) |
 | `getrandom` (with `js` feature) | Required by some crates in WASM env |
 
