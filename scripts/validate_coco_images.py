@@ -15,9 +15,12 @@ import os
 import sys
 from pathlib import Path
 
+import cv2
 import numpy as np
 import requests
+import torch
 from PIL import Image
+from safetensors.torch import save_file
 
 FIXTURES_DIR = Path(__file__).parent.parent / "tests" / "fixtures" / "coco"
 MODEL_PATH = "yolo26n.pt"
@@ -125,6 +128,31 @@ def main() -> None:
         rgba = np.array(img.convert("RGBA"))
         rgba_path = FIXTURES_DIR / f"{image_id}_rgba.bin"
         rgba_path.write_bytes(rgba.tobytes())
+
+        # Save cv2-preprocessed tensor for apples-to-apples model comparison.
+        # This replicates ultralytics' exact preprocessing (cv2.INTER_LINEAR + letterbox).
+        img_rgb = np.array(img)
+        target = 640
+        r_scale = min(target / height, target / width)
+        nw, nh = round(width * r_scale), round(height * r_scale)
+        resized = cv2.resize(img_rgb, (nw, nh), interpolation=cv2.INTER_LINEAR)
+        dw, dh = target - nw, target - nh
+        pad_left = round(dw / 2 - 0.1)
+        pad_right = round(dw / 2 + 0.1)
+        pad_top = round(dh / 2 - 0.1)
+        pad_bottom = round(dh / 2 + 0.1)
+        padded = cv2.copyMakeBorder(
+            resized, pad_top, pad_bottom, pad_left, pad_right,
+            cv2.BORDER_CONSTANT, value=(114, 114, 114),
+        )
+        tensor_np = padded.astype(np.float32) / 255.0
+        tensor_np = tensor_np.transpose(2, 0, 1)  # CHW
+        tensor_np = np.expand_dims(tensor_np, 0)  # BCHW
+        tensor_torch = torch.from_numpy(tensor_np.copy())
+        save_file(
+            {"input": tensor_torch},
+            str(FIXTURES_DIR / f"{image_id}_input.safetensors"),
+        )
 
         # Run Python inference (conf=0.001 to get all detections for flexible threshold testing)
         results = model(img, conf=0.001, verbose=False)
