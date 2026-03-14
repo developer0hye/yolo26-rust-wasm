@@ -1,26 +1,57 @@
-# YOLO26 Rust WASM Demo
+# YOLO26 Rust WASM
 
-Browser-based YOLO26 object detection demo. All inference runs entirely in the browser via Rust compiled to WebAssembly using [candle](https://github.com/huggingface/candle).
+Real-time object detection running entirely in the browser — no server, no upload, no API calls. The YOLO26n model is implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
+
+![Demo](assets/demo.png)
+
+## Why This Exists
+
+Most browser-based ML demos rely on ONNX Runtime or TensorFlow.js. This project takes a different approach: the entire YOLO26n architecture is implemented from scratch in Rust and compiled to WASM. Every layer — convolutions, batch norm, attention, detect head — runs as native Rust code in the browser.
+
+This means:
+
+- **Zero server dependency** — inference happens on the client. No data leaves the browser.
+- **No runtime framework** — no ONNX, no TF.js. Just Rust → WASM → Canvas.
+- **Portable** — one 1.2 MB `.wasm` binary + 5 MB SafeTensors weights. Works anywhere WebAssembly runs.
 
 ## Features
 
-- YOLO26n model implemented natively in Rust (candle framework)
-- SafeTensors weight loading (~5MB FP16)
-- Single `index.html` — no framework dependencies
-- Image upload with drag-and-drop
-- Canvas bounding box rendering with class-specific colors
+- YOLO26n model (2.4M params) natively implemented in Rust
+- SafeTensors weight loading (~5 MB FP16)
+- WASM SIMD128 acceleration for vectorized matrix operations
+- Web Worker inference (non-blocking UI)
+- EXIF-aware image handling for correct orientation
 - Confidence threshold slider (filters without re-running inference)
-- Mobile responsive layout
-- WASM SIMD128 acceleration
+- Click-to-zoom full resolution view
+- Responsive viewport-fit layout
+- 36 unit tests covering all building blocks and full pipeline
+
+## Architecture
+
+```
+Browser (Next.js + Web Worker)
+  │ File → createImageBitmap (EXIF-normalized)
+  │ → Canvas → RGBA pixels
+  ▼
+Rust WASM Module (candle)
+  ├── preprocess.rs    → Bilinear resize, letterbox 640×640, normalize, HWC→CHW
+  ├── model/
+  │   ├── backbone.rs  → Conv, C3k2, SPPF, C2PSA (layers 0-10)
+  │   ├── neck.rs      → FPN-PAN feature fusion (layers 11-22)
+  │   └── head.rs      → Detect: end2end, topk-300, NMS-free (layer 23)
+  └── postprocess.rs   → [1,300,6] → coord transform → JSON
+  ▼
+Canvas 2D (bounding boxes + labels)
+```
 
 ## Prerequisites
 
-- Rust (stable)
+- Rust (stable) with `wasm32-unknown-unknown` target
 - `wasm-pack`: `cargo install wasm-pack`
-- `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
+- Node.js 18+ (for the web app)
 - Python 3 + `ultralytics` + `safetensors` (for model export only)
 
-## Setup
+## Quick Start
 
 ### 1. Export Model Weights
 
@@ -29,39 +60,24 @@ pip install ultralytics safetensors
 ./scripts/download_model.sh
 ```
 
-This downloads YOLO26n and exports weights to `weights/yolo26n.safetensors`.
-
 ### 2. Build WASM
 
 ```bash
-RUSTFLAGS='-C target-feature=+simd128' wasm-pack build --target web --release
+wasm-pack build --target web --release
 ```
 
-### 3. Run
+SIMD is enabled automatically via `.cargo/config.toml`.
+
+### 3. Run Web App
 
 ```bash
-npx serve .
-# Open http://localhost:3000
+cd web
+cp -r ../pkg/yolo26_rust_wasm{.js,_bg.wasm} public/wasm/
+ln -sf ../../weights public/weights
+npm install && npm run dev
 ```
 
-## Architecture
-
-```
-Browser (index.html + vanilla JS)
-  │ RGBA pixels (Canvas API)
-  ▼
-Rust WASM Module (candle)
-  ├── preprocess.rs    → RGBA→RGB, letterbox 640×640, normalize, HWC→CHW
-  ├── model/
-  │   ├── blocks.rs    → ConvBlock, Bottleneck, C3k2, C3k, SPPF, C2PSA, Attention
-  │   ├── backbone.rs  → Layers 0-10 (Conv + C3k2 + SPPF + C2PSA)
-  │   ├── neck.rs      → Layers 11-22 (FPN-PAN feature fusion)
-  │   └── head.rs      → Layer 23 (Detect: end2end, topk-300, NMS-free)
-  └── postprocess.rs   → Parse [1,300,6], coord transform, JSON
-  │ JSON (detection results)
-  ▼
-Canvas 2D (bounding boxes + labels)
-```
+Open http://localhost:3000.
 
 ## WASM API
 
@@ -79,4 +95,4 @@ detect(pixels: &[u8], width: u32, height: u32, confidence_threshold: f32) -> Res
 cargo test
 ```
 
-34 tests covering preprocessing, postprocessing, all building blocks, backbone, neck, detect head, and full pipeline.
+36 tests covering preprocessing, postprocessing, all building blocks (ConvBlock, Bottleneck, C3k2, C3k, SPPF, C2PSA, Attention), backbone, neck, detect head, and full pipeline.
