@@ -430,3 +430,78 @@ fn test_coco_model_only() {
         "Model-only: median conf diff {median_conf_diff:.6} exceeds 0.01 threshold"
     );
 }
+
+/// Export Rust detections as JSON for all COCO images (for visualization scripts).
+/// Runs full pipeline (RGBA → preprocess → model → postprocess) and saves
+/// {image_id}_rust_detections.json alongside existing fixtures.
+#[test]
+#[ignore]
+fn export_rust_detections() {
+    if !fixtures_available() {
+        eprintln!("Skipping: fixtures not available.");
+        return;
+    }
+
+    let device: Device = Device::Cpu;
+    let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let confidence_threshold: f32 = 0.25;
+
+    for image_id in &COCO_IMAGE_IDS {
+        let rgba_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_rgba.bin");
+        let metadata_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_metadata.json");
+
+        if !Path::new(&rgba_path).exists() || !Path::new(&metadata_path).exists() {
+            continue;
+        }
+
+        let metadata_str: String = std::fs::read_to_string(&metadata_path).unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+        let width: u32 = metadata["width"].as_u64().unwrap() as u32;
+        let height: u32 = metadata["height"].as_u64().unwrap() as u32;
+
+        let rgba_bytes: Vec<u8> = std::fs::read(&rgba_path).unwrap();
+        let (input, letterbox) =
+            yolo26_rust_wasm::preprocess::preprocess(&rgba_bytes, width, height, &device).unwrap();
+        let output = model.forward(&input).unwrap();
+        let rust_dets = yolo26_rust_wasm::postprocess::postprocess(
+            &output,
+            &letterbox,
+            width,
+            height,
+            confidence_threshold,
+        )
+        .unwrap();
+
+        // Convert to JSON-serializable format matching Python metadata structure
+        let dets_json: Vec<serde_json::Value> = rust_dets
+            .iter()
+            .map(|d| {
+                serde_json::json!({
+                    "x1": (d.x * 100.0).round() / 100.0,
+                    "y1": (d.y * 100.0).round() / 100.0,
+                    "x2": ((d.x + d.width) * 100.0).round() / 100.0,
+                    "y2": ((d.y + d.height) * 100.0).round() / 100.0,
+                    "confidence": (d.confidence * 1_000_000.0).round() / 1_000_000.0,
+                    "class_id": d.class_id,
+                    "class_name": d.class_name,
+                })
+            })
+            .collect();
+
+        let output_json = serde_json::json!({
+            "image_id": image_id,
+            "width": width,
+            "height": height,
+            "rust_detections": dets_json,
+        });
+
+        let output_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_rust_detections.json");
+        std::fs::write(
+            &output_path,
+            serde_json::to_string_pretty(&output_json).unwrap(),
+        )
+        .unwrap();
+        eprintln!("[{image_id}] Saved {} detections", rust_dets.len());
+    }
+}
