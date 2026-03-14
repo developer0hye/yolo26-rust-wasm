@@ -11,6 +11,7 @@
 
 use candle_core::{Device, Tensor};
 use std::path::Path;
+use yolo26_rust_wasm::model::Multiples;
 
 const WEIGHTS_PATH: &str = "weights/yolo26n.safetensors";
 const COCO_FIXTURES_DIR: &str = "tests/fixtures/coco";
@@ -106,7 +107,8 @@ fn test_coco_16_images() {
 
     // Load model once
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
 
     let confidence_threshold: f32 = 0.25;
     let mut results: Vec<ImageResult> = Vec::new();
@@ -275,7 +277,8 @@ fn test_coco_model_only() {
     let device: Device = Device::Cpu;
 
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
 
     let confidence_threshold: f32 = 0.25;
     let mut results: Vec<ImageResult> = Vec::new();
@@ -444,7 +447,8 @@ fn export_rust_detections() {
 
     let device: Device = Device::Cpu;
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
     let confidence_threshold: f32 = 0.25;
 
     for image_id in &COCO_IMAGE_IDS {

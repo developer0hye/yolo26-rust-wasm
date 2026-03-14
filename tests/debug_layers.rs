@@ -3,6 +3,7 @@
 
 use candle_core::{Device, Tensor};
 use candle_nn::VarBuilder;
+use yolo26_rust_wasm::model::Multiples;
 
 fn load_vb(device: &Device) -> VarBuilder<'static> {
     let weights: Vec<u8> = std::fs::read("weights/yolo26n.safetensors").unwrap();
@@ -117,7 +118,8 @@ fn test_backbone_output() {
     let vb = load_vb(&device);
     let input = load_input(&device);
 
-    let backbone = yolo26_rust_wasm::model::backbone::Backbone::load(vb.pp("model")).unwrap();
+    let backbone =
+        yolo26_rust_wasm::model::backbone::Backbone::load(vb.pp("model"), &Multiples::n()).unwrap();
     let bb = backbone.forward(&input).unwrap();
     print_first("Rust p3 (layer 4)", &bb.p3, 5);
     print_first("Rust p4 (layer 6)", &bb.p4, 5);

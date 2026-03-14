@@ -10,6 +10,7 @@
 
 use candle_core::{Device, Tensor};
 use std::path::Path;
+use yolo26_rust_wasm::model::Multiples;
 
 const WEIGHTS_PATH: &str = "weights/yolo26n.safetensors";
 const FIXTURE_INPUT: &str = "tests/fixtures/test_input.safetensors";
@@ -74,7 +75,8 @@ fn test_pre_topk_matches_python() {
 
     // Load model with real weights
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
 
     // Load reference input
     let input: Tensor = load_safetensor(FIXTURE_INPUT, "input", &device);
@@ -123,7 +125,8 @@ fn test_top_detections_match_python() {
 
     // Load model
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
 
     // Load reference input and run Rust inference
     let input: Tensor = load_safetensor(FIXTURE_INPUT, "input", &device);
@@ -215,7 +218,8 @@ fn test_full_pipeline_matches_python() {
 
     // Load model
     let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
-    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device, &Multiples::n())
+        .unwrap();
 
     // Load RGBA test image
     let rgba_bytes: Vec<u8> = std::fs::read("tests/fixtures/test_image_rgba.bin").unwrap();

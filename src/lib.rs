@@ -2,31 +2,37 @@ pub mod model;
 pub mod postprocess;
 pub mod preprocess;
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use wasm_bindgen::prelude::*;
 
+use model::Multiples;
 use model::Yolo26Model;
 use postprocess::{postprocess, DetectionResult};
 use preprocess::preprocess;
 
-static MODEL: OnceLock<Yolo26Model> = OnceLock::new();
+static MODEL: Mutex<Option<Yolo26Model>> = Mutex::new(None);
 
-/// Load SafeTensors model bytes into memory. Called once on page load.
+/// Load SafeTensors model bytes into memory.
+/// `size` must be one of "n", "s", "m", "l", "x".
+/// Can be called multiple times to switch model sizes.
 #[wasm_bindgen]
-pub fn init_model(weights: &[u8]) -> Result<(), JsValue> {
+pub fn init_model(weights: &[u8], size: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    let multiples = Multiples::from_name(size)
+        .ok_or_else(|| JsValue::from_str(&format!("Unknown model size: {size}")))?;
     let device = candle_core::Device::Cpu;
-    let model = Yolo26Model::load(weights.to_vec(), &device)
+    let loaded_model = Yolo26Model::load(weights.to_vec(), &device, &multiples)
         .map_err(|e| JsValue::from_str(&format!("Failed to load model: {e}")))?;
-    MODEL
-        .set(model)
-        .map_err(|_| JsValue::from_str("Model already initialized"))?;
+    let mut guard = MODEL
+        .lock()
+        .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+    *guard = Some(loaded_model);
     Ok(())
 }
 
 /// Run inference on RGBA pixels. Returns JSON string with detections.
-/// The HTML demo passes confidence_threshold=0.0 and filters in JS.
+/// The web app passes confidence_threshold=0.0 and filters in JS.
 #[wasm_bindgen]
 pub fn detect(
     pixels: &[u8],
@@ -34,8 +40,11 @@ pub fn detect(
     height: u32,
     confidence_threshold: f32,
 ) -> Result<String, JsValue> {
-    let model: &Yolo26Model = MODEL
-        .get()
+    let guard = MODEL
+        .lock()
+        .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+    let model: &Yolo26Model = guard
+        .as_ref()
         .ok_or_else(|| JsValue::from_str("Model not loaded yet"))?;
     let device = candle_core::Device::Cpu;
 
@@ -70,22 +79,22 @@ pub fn detect(
 mod tests {
     use candle_core::{DType, Device, Tensor};
 
-    use crate::model::Yolo26Model;
+    use crate::model::{make_ch, Multiples, Yolo26Model};
     use crate::postprocess::postprocess;
     use crate::preprocess::preprocess;
 
     /// Full pipeline test with VarMap (random weights) — verifies shapes only.
     #[test]
     fn test_detect_pipeline_shapes() {
+        let m = Multiples::n();
         let device = Device::Cpu;
         let varmap = candle_nn::VarMap::new();
         let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
 
-        // Build model from VarMap (random weights)
-        let backbone = crate::model::backbone::Backbone::load(vb.pp("model")).unwrap();
-        let neck = crate::model::neck::Neck::load(vb.pp("model")).unwrap();
-        let head =
-            crate::model::head::Detect::load(vb.pp("model").pp("23"), &[64, 128, 256], 80).unwrap();
+        let backbone = crate::model::backbone::Backbone::load(vb.pp("model"), &m).unwrap();
+        let neck = crate::model::neck::Neck::load(vb.pp("model"), &m).unwrap();
+        let head_ch = [make_ch(256, &m), make_ch(512, &m), make_ch(1024, &m)];
+        let head = crate::model::head::Detect::load(vb.pp("model").pp("23"), &head_ch, 80).unwrap();
         let model = Yolo26Model::new_from_parts(backbone, neck, head);
 
         // Synthetic 100x75 RGBA image
@@ -100,7 +109,32 @@ mod tests {
         assert_eq!(output.dims(), &[1, 300, 6]);
 
         let dets = postprocess(&output, &letterbox, width, height, 0.5).unwrap();
-        // With random weights, detections may or may not pass threshold — just verify no crash
+        assert!(dets.len() <= 300);
+    }
+
+    /// Verify pipeline works with a larger model size (s).
+    #[test]
+    fn test_detect_pipeline_shapes_s() {
+        let m = Multiples::s();
+        let device = Device::Cpu;
+        let varmap = candle_nn::VarMap::new();
+        let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
+
+        let backbone = crate::model::backbone::Backbone::load(vb.pp("model"), &m).unwrap();
+        let neck = crate::model::neck::Neck::load(vb.pp("model"), &m).unwrap();
+        let head_ch = [make_ch(256, &m), make_ch(512, &m), make_ch(1024, &m)];
+        let head = crate::model::head::Detect::load(vb.pp("model").pp("23"), &head_ch, 80).unwrap();
+        let model = Yolo26Model::new_from_parts(backbone, neck, head);
+
+        let width: u32 = 100;
+        let height: u32 = 75;
+        let rgba = vec![128u8; (width * height * 4) as usize];
+
+        let (input, letterbox) = preprocess(&rgba, width, height, &device).unwrap();
+        let output: Tensor = model.forward(&input).unwrap();
+        assert_eq!(output.dims(), &[1, 300, 6]);
+
+        let dets = postprocess(&output, &letterbox, width, height, 0.5).unwrap();
         assert!(dets.len() <= 300);
     }
 }
