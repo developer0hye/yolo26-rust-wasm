@@ -35,7 +35,7 @@ self.onmessage = async (event: MessageEvent) => {
       });
 
       const weightsArray = new Uint8Array(request.weightsBuffer);
-      wasm.init_model(weightsArray);
+      wasm.init_model(weightsArray, request.modelName);
 
       const sizeMB = parseFloat((weightsArray.length / 1e6).toFixed(1));
       self.postMessage({ type: "init:done", modelSizeMB: sizeMB });

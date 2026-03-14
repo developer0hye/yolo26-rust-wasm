@@ -7,9 +7,18 @@ import { ConfidenceSlider } from "@/components/confidence-slider";
 import { DetectionCanvas } from "@/components/detection-canvas";
 import { DetectionList } from "@/components/detection-list";
 import { InferenceClient } from "@/lib/worker-client";
-import type { DetectionResult, ModelStatus } from "@/lib/types";
+import type { DetectionResult, ModelName, ModelStatus } from "@/lib/types";
+
+const MODEL_OPTIONS: ModelName[] = [
+  "yolo26n",
+  "yolo26s",
+  "yolo26m",
+  "yolo26l",
+  "yolo26x",
+];
 
 export default function Home() {
+  const [selectedModel, setSelectedModel] = useState<ModelName>("yolo26n");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("Loading...");
   const [currentImage, setCurrentImage] = useState<HTMLImageElement | null>(
@@ -21,12 +30,15 @@ export default function Home() {
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.25);
   const clientRef = useRef<InferenceClient | null>(null);
 
-  useEffect(() => {
-    const client = new InferenceClient();
+  const loadModel = useCallback((modelName: ModelName) => {
+    const client = clientRef.current ?? new InferenceClient();
     clientRef.current = client;
 
+    setModelStatus("idle");
+    setStatusMessage(`Loading ${modelName}...`);
+
     client
-      .initialize((stage, message) => {
+      .initialize(modelName, (stage, message) => {
         setStatusMessage(message);
         if (stage === "weights") setModelStatus("loading-weights");
         else if (stage === "wasm") setModelStatus("loading-wasm");
@@ -35,16 +47,30 @@ export default function Home() {
       .then((sizeMB) => {
         setModelStatus("ready");
         setStatusMessage(
-          `Model loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+          `${modelName} loaded (${sizeMB} MB). Select or drop an image to detect objects.`
         );
       })
       .catch((err) => {
         setModelStatus("error");
         setStatusMessage(`Failed to load model: ${err}`);
       });
-
-    return () => client.terminate();
   }, []);
+
+  useEffect(() => {
+    loadModel(selectedModel);
+    return () => clientRef.current?.terminate();
+    // Only run on mount — model switching is handled by handleModelChange
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleModelChange = useCallback(
+    (modelName: ModelName) => {
+      setSelectedModel(modelName);
+      setCachedResult(null);
+      loadModel(modelName);
+    },
+    [loadModel]
+  );
 
   const handleImageSelected = useCallback(
     async (file: File) => {
@@ -143,6 +169,13 @@ export default function Home() {
 
       {/* Controls bar */}
       <div className="mt-5 flex h-10 shrink-0 items-center gap-4">
+        <ModelSelector
+          value={selectedModel}
+          onChange={handleModelChange}
+          isDisabled={
+            modelStatus !== "ready" && modelStatus !== "error"
+          }
+        />
         <StatusBanner status={modelStatus} message={statusMessage} />
         <ImageDropzone
           onImageSelected={handleImageSelected}
@@ -178,6 +211,31 @@ export default function Home() {
         />
       </div>
     </main>
+  );
+}
+
+function ModelSelector({
+  value,
+  onChange,
+  isDisabled,
+}: {
+  value: ModelName;
+  onChange: (model: ModelName) => void;
+  isDisabled: boolean;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as ModelName)}
+      disabled={isDisabled}
+      className="h-full rounded-lg border border-[#e2e6eb] bg-white px-3 text-[14px] font-medium text-[#0e1726] transition-colors hover:border-[#1a4a8f] focus:border-[#1a4a8f] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {MODEL_OPTIONS.map((m) => (
+        <option key={m} value={m}>
+          {m.toUpperCase()}
+        </option>
+      ))}
+    </select>
   );
 }
 

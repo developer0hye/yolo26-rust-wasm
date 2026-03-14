@@ -24,8 +24,10 @@ export type ModelStatus =
   | "detecting"
   | "error";
 
+export type ModelName = "yolo26n" | "yolo26s" | "yolo26m" | "yolo26l" | "yolo26x";
+
 export type WorkerRequest =
-  | { type: "init"; weightsBuffer: ArrayBuffer }
+  | { type: "init"; weightsBuffer: ArrayBuffer; modelName: ModelName }
   | {
       type: "detect";
       pixels: Uint8Array;

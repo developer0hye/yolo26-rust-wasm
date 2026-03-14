@@ -1,20 +1,25 @@
-import type { DetectionResult, WorkerResponse } from "./types";
+import type { DetectionResult, ModelName, WorkerResponse } from "./types";
 
 export type ProgressCallback = (stage: string, message: string) => void;
 
 export class InferenceClient {
   private worker: Worker | null = null;
 
-  async initialize(onProgress?: ProgressCallback): Promise<number> {
+  async initialize(
+    modelName: ModelName,
+    onProgress?: ProgressCallback
+  ): Promise<number> {
+    // Terminate previous worker if re-initializing with a different model
+    this.terminate();
+
     return new Promise((resolve, reject) => {
       this.worker = new Worker(
         new URL("../workers/inference.worker.ts", import.meta.url)
       );
 
-      // Fetch weights on main thread (enables future progress tracking)
-      onProgress?.("weights", "Fetching model weights...");
+      onProgress?.("weights", `Fetching ${modelName} weights...`);
 
-      fetch("/weights/yolo26n.safetensors")
+      fetch(`/weights/${modelName}.safetensors`)
         .then((resp) => {
           if (!resp.ok)
             throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
@@ -36,9 +41,8 @@ export class InferenceClient {
 
           this.worker.onerror = (err) => reject(err);
 
-          // Transfer the ArrayBuffer to the worker (zero-copy)
           this.worker.postMessage(
-            { type: "init", weightsBuffer },
+            { type: "init", weightsBuffer, modelName },
             [weightsBuffer]
           );
         })
@@ -67,7 +71,6 @@ export class InferenceClient {
         }
       };
 
-      // Transfer the pixel buffer to the worker (zero-copy)
       this.worker.postMessage(
         {
           type: "detect",
