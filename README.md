@@ -97,6 +97,10 @@ cargo test
 
 36 tests covering preprocessing, postprocessing, all building blocks (ConvBlock, Bottleneck, C3k2, C3k, SPPF, C2PSA, Attention), backbone, neck, detect head, and full pipeline.
 
+## Candle Example
+
+A standalone candle example for YOLO26 (all model sizes: n/s/m/l/x) has been contributed to the [huggingface/candle](https://github.com/huggingface/candle) repository. Try the [browser demo](https://huggingface.co/spaces/developer0hye/candle-yolo-v26) — runs entirely in WebAssembly.
+
 ## Acknowledgments
 
 The YOLO26 architecture is designed by [Ultralytics](https://github.com/ultralytics/ultralytics). Their consistent work on pushing real-time object detection forward — from YOLOv5 through YOLO26 — makes projects like this possible. Model weights are exported from the official Ultralytics package.
