@@ -18,7 +18,7 @@ This means:
 
 - All YOLO26 scales (n/s/m/l/x) natively implemented in Rust
 - In-browser model selector for switching between scales
-- SafeTensors weight loading
+- FP16 SafeTensors weights (auto-converted to FP32 at load time — zero accuracy loss)
 - WASM SIMD128 acceleration for vectorized matrix operations
 - Web Worker inference (non-blocking UI)
 - EXIF-aware image handling for correct orientation
@@ -59,13 +59,23 @@ Canvas 2D (bounding boxes + labels)
 
 ```bash
 pip install ultralytics safetensors
-./scripts/download_model.sh
+python scripts/export_all_sizes.py
 ```
+
+Exports all 5 scales as FP16 SafeTensors (~240 MB total):
+
+| Model | Params | Weights |
+|-------|--------|---------|
+| yolo26n | 2.6M | 5 MB |
+| yolo26s | 10.0M | 20 MB |
+| yolo26m | 21.9M | 44 MB |
+| yolo26l | 26.3M | 53 MB |
+| yolo26x | 59.0M | 118 MB |
 
 ### 2. Build WASM
 
 ```bash
-wasm-pack build --target web --release
+wasm-pack build --target web --out-dir web/public/wasm
 ```
 
 SIMD is enabled automatically via `.cargo/config.toml`.
@@ -73,9 +83,9 @@ SIMD is enabled automatically via `.cargo/config.toml`.
 ### 3. Run Web App
 
 ```bash
+mkdir -p web/public/weights
+cp yolo26*.safetensors web/public/weights/
 cd web
-cp -r ../pkg/yolo26_rust_wasm{.js,_bg.wasm} public/wasm/
-ln -sf ../../weights public/weights
 npm install && npm run dev
 ```
 
