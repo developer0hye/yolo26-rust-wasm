@@ -6,6 +6,10 @@ edition = "2021"
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Apple Accelerate BLAS for faster native CPU inference (not available for WASM)
+accelerate = ["candle-core/accelerate"]
+
 [dependencies]
 candle-core = "0.8"
 candle-nn = "0.8"
