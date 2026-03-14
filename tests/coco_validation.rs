@@ -9,7 +9,7 @@
 //!
 //! Run with: cargo test --test coco_validation -- --ignored --nocapture
 
-use candle_core::Device;
+use candle_core::{Device, Tensor};
 use std::path::Path;
 
 const WEIGHTS_PATH: &str = "weights/yolo26n.safetensors";
@@ -77,6 +77,7 @@ fn fixtures_available() -> bool {
 }
 
 /// Per-image comparison result
+#[allow(dead_code)]
 struct ImageResult {
     image_id: String,
     description: String,
@@ -254,5 +255,178 @@ fn test_coco_16_images() {
     assert!(
         median_conf_diff < 0.05,
         "Median top confidence difference {median_conf_diff:.4} exceeds 0.05 threshold"
+    );
+}
+
+/// Model-only test: uses Python cv2-preprocessed tensors to isolate model accuracy
+/// from preprocessing differences. If this passes with higher accuracy than the full
+/// pipeline test, the remaining gap is purely from preprocessing (cv2 vs our bilinear).
+#[test]
+#[ignore]
+fn test_coco_model_only() {
+    if !fixtures_available() {
+        eprintln!(
+            "Skipping: fixtures not available.\n\
+             Run: scripts/download_model.sh && python3 scripts/validate_coco_images.py"
+        );
+        return;
+    }
+
+    let device: Device = Device::Cpu;
+
+    let weights_bytes: Vec<u8> = std::fs::read(WEIGHTS_PATH).unwrap();
+    let model = yolo26_rust_wasm::model::Yolo26Model::load(weights_bytes, &device).unwrap();
+
+    let confidence_threshold: f32 = 0.25;
+    let mut results: Vec<ImageResult> = Vec::new();
+    let mut pass_count: usize = 0;
+    let mut total_count: usize = 0;
+
+    eprintln!("\n{:=<80}", "");
+    eprintln!("COCO Model-Only Validation (Python cv2 preprocessing), conf_threshold={confidence_threshold}");
+    eprintln!("{:=<80}", "");
+
+    for image_id in &COCO_IMAGE_IDS {
+        let input_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_input.safetensors");
+        let metadata_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_metadata.json");
+
+        if !Path::new(&input_path).exists() || !Path::new(&metadata_path).exists() {
+            eprintln!("[{image_id}] SKIP: fixture files missing");
+            continue;
+        }
+
+        total_count += 1;
+
+        // Load metadata
+        let metadata_str: String = std::fs::read_to_string(&metadata_path).unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+        let width: u32 = metadata["width"].as_u64().unwrap() as u32;
+        let height: u32 = metadata["height"].as_u64().unwrap() as u32;
+        let description: &str = metadata["description"].as_str().unwrap_or("");
+
+        // Load Python reference detections
+        let python_all_dets: &Vec<serde_json::Value> =
+            metadata["python_detections"].as_array().unwrap();
+        let python_dets: Vec<&serde_json::Value> = python_all_dets
+            .iter()
+            .filter(|d| d["confidence"].as_f64().unwrap() >= confidence_threshold as f64)
+            .collect();
+
+        // Load Python cv2-preprocessed input tensor [1, 3, 640, 640]
+        let input_tensors = candle_core::safetensors::load(&input_path, &device).unwrap();
+        let input: &Tensor = input_tensors.get("input").expect("missing 'input' key");
+
+        // Reconstruct LetterboxInfo matching Python's preprocessing
+        let target: f32 = 640.0;
+        let scale: f32 = f32::min(target / width as f32, target / height as f32);
+        let new_w: f32 = (width as f32 * scale).round();
+        let new_h: f32 = (height as f32 * scale).round();
+        let pad_x: f32 = (target - new_w) / 2.0;
+        let pad_y: f32 = (target - new_h) / 2.0;
+
+        let letterbox = yolo26_rust_wasm::preprocess::LetterboxInfo {
+            scale,
+            pad_x,
+            pad_y,
+        };
+
+        // Run Rust model + postprocess
+        let output: Tensor = model.forward(input).unwrap();
+        let rust_dets = yolo26_rust_wasm::postprocess::postprocess(
+            &output,
+            &letterbox,
+            width,
+            height,
+            confidence_threshold,
+        )
+        .unwrap();
+
+        // Compare top detection
+        let rust_top_class: String = rust_dets
+            .first()
+            .map(|d| d.class_name.clone())
+            .unwrap_or_default();
+        let rust_top_conf: f32 = rust_dets.first().map(|d| d.confidence).unwrap_or(0.0);
+        let python_top_class: String = python_dets
+            .first()
+            .and_then(|d| d["class_name"].as_str())
+            .unwrap_or("")
+            .to_string();
+        let python_top_conf: f32 = python_dets
+            .first()
+            .and_then(|d| d["confidence"].as_f64())
+            .unwrap_or(0.0) as f32;
+
+        let top_class_match: bool =
+            rust_top_class == python_top_class || (rust_dets.is_empty() && python_dets.is_empty());
+        let top_conf_diff: f32 = (rust_top_conf - python_top_conf).abs();
+
+        let status: &str = if top_class_match && top_conf_diff < 0.05 {
+            pass_count += 1;
+            "PASS"
+        } else if top_class_match {
+            pass_count += 1;
+            "PASS (conf drift)"
+        } else {
+            "FAIL"
+        };
+
+        eprintln!(
+            "[{image_id}] {status:15} | {description:20} | \
+             rust={:2} python={:2} | \
+             rust_top={:15} ({:.4}) python_top={:15} ({:.4}) conf_diff={:.4}",
+            rust_dets.len(),
+            python_dets.len(),
+            rust_top_class,
+            rust_top_conf,
+            python_top_class,
+            python_top_conf,
+            top_conf_diff,
+        );
+
+        results.push(ImageResult {
+            image_id: image_id.to_string(),
+            description: description.to_string(),
+            rust_detection_count: rust_dets.len(),
+            python_detection_count: python_dets.len(),
+            top_class_match,
+            top_conf_diff,
+            rust_top_class,
+            python_top_class,
+            rust_top_conf,
+            python_top_conf,
+        });
+    }
+
+    eprintln!("{:=<80}", "");
+    eprintln!("Results: {pass_count}/{total_count} passed (top class match + conf_diff < 0.05)");
+
+    let total_rust_dets: usize = results.iter().map(|r| r.rust_detection_count).sum();
+    let total_python_dets: usize = results.iter().map(|r| r.python_detection_count).sum();
+    let avg_conf_diff: f32 =
+        results.iter().map(|r| r.top_conf_diff).sum::<f32>() / results.len().max(1) as f32;
+    let class_match_rate: f32 =
+        results.iter().filter(|r| r.top_class_match).count() as f32 / results.len().max(1) as f32;
+
+    eprintln!("Total Rust detections:  {total_rust_dets}");
+    eprintln!("Total Python detections: {total_python_dets}");
+    eprintln!("Avg top conf diff:      {avg_conf_diff:.6}");
+    eprintln!("Top class match rate:   {:.1}%", class_match_rate * 100.0);
+
+    let mut conf_diffs: Vec<f32> = results.iter().map(|r| r.top_conf_diff).collect();
+    conf_diffs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let median_conf_diff: f32 = conf_diffs[conf_diffs.len() / 2];
+    eprintln!("Median top conf diff:   {median_conf_diff:.6}");
+    eprintln!("{:=<80}", "");
+
+    // Model-only should have very high accuracy — same preprocessing = same results
+    assert!(
+        class_match_rate >= 0.90,
+        "Model-only: top class match rate {:.1}% is below 90% threshold",
+        class_match_rate * 100.0
+    );
+    assert!(
+        median_conf_diff < 0.01,
+        "Model-only: median conf diff {median_conf_diff:.6} exceeds 0.01 threshold"
     );
 }
