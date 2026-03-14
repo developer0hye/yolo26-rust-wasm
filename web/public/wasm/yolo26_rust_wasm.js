@@ -2,7 +2,6 @@
 
 /**
  * Run inference on RGBA pixels. Returns JSON string with detections.
- * The HTML demo passes confidence_threshold=0.0 and filters in JS.
  * @param {Uint8Array} pixels
  * @param {number} width
  * @param {number} height
@@ -31,13 +30,17 @@ export function detect(pixels, width, height, confidence_threshold) {
 }
 
 /**
- * Load SafeTensors model bytes into memory. Called once on page load.
+ * Load SafeTensors model bytes into memory.
+ * `model_name` identifies the scale: "yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x".
  * @param {Uint8Array} weights
+ * @param {string} model_name
  */
-export function init_model(weights) {
+export function init_model(weights, model_name) {
     const ptr0 = passArray8ToWasm0(weights, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.init_model(ptr0, len0);
+    const ptr1 = passStringToWasm0(model_name, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.init_model(ptr0, len0, ptr1, len1);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }

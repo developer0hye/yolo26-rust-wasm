@@ -1,5 +1,6 @@
 pub mod backbone;
 pub mod blocks;
+pub mod config;
 pub mod head;
 pub mod neck;
 
@@ -7,13 +8,14 @@ use candle_core::{DType, Device, Result, Tensor};
 use candle_nn::VarBuilder;
 
 use backbone::Backbone;
+use config::ModelScale;
 use head::Detect;
 use neck::Neck;
 
 const NC: usize = 80;
-const HEAD_INPUT_CHANNELS: [usize; 3] = [64, 128, 256];
 
-/// Top-level YOLO26n model: Backbone + Neck + Detect head.
+/// Top-level YOLO26 model: Backbone + Neck + Detect head.
+/// Supports all scales (n/s/m/l/x) via ModelScale parameterization.
 pub struct Yolo26Model {
     backbone: Backbone,
     neck: Neck,
@@ -21,14 +23,15 @@ pub struct Yolo26Model {
 }
 
 impl Yolo26Model {
-    /// Load model from SafeTensors bytes.
+    /// Load model from SafeTensors bytes with the given scale.
     /// Weight keys start with "model." prefix (ultralytics convention).
-    pub fn load(weights_bytes: Vec<u8>, device: &Device) -> Result<Self> {
+    pub fn load(weights_bytes: Vec<u8>, device: &Device, scale: ModelScale) -> Result<Self> {
         let vb = VarBuilder::from_buffered_safetensors(weights_bytes, DType::F32, device)?;
         let vb = vb.pp("model");
-        let backbone: Backbone = Backbone::load(vb.clone())?;
-        let neck: Neck = Neck::load(vb.clone())?;
-        let head: Detect = Detect::load(vb.pp("23"), &HEAD_INPUT_CHANNELS, NC)?;
+        let backbone: Backbone = Backbone::load(vb.clone(), scale)?;
+        let neck: Neck = Neck::load(vb.clone(), scale)?;
+        let head_channels: [usize; 3] = scale.head_input_channels();
+        let head: Detect = Detect::load(vb.pp("23"), &head_channels, NC)?;
         Ok(Self {
             backbone,
             neck,
@@ -69,18 +72,30 @@ mod tests {
     use candle_nn::VarMap;
 
     #[test]
-    fn test_model_output_shape() {
+    fn test_model_output_shape_n() {
         let device = Device::Cpu;
         let varmap = VarMap::new();
         let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
-        let backbone = Backbone::load(vb.pp("model")).unwrap();
-        let neck = Neck::load(vb.pp("model")).unwrap();
-        let head = Detect::load(vb.pp("model").pp("23"), &HEAD_INPUT_CHANNELS, NC).unwrap();
-        let model = Yolo26Model {
-            backbone,
-            neck,
-            head,
-        };
+        let scale = ModelScale::N;
+        let backbone = Backbone::load(vb.pp("model"), scale).unwrap();
+        let neck = Neck::load(vb.pp("model"), scale).unwrap();
+        let head = Detect::load(vb.pp("model").pp("23"), &scale.head_input_channels(), NC).unwrap();
+        let model = Yolo26Model::new_from_parts(backbone, neck, head);
+        let x = Tensor::zeros((1, 3, 640, 640), DType::F32, &device).unwrap();
+        let out = model.forward(&x).unwrap();
+        assert_eq!(out.dims(), &[1, 300, 6]);
+    }
+
+    #[test]
+    fn test_model_output_shape_m() {
+        let device = Device::Cpu;
+        let varmap = VarMap::new();
+        let vb = VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let scale = ModelScale::M;
+        let backbone = Backbone::load(vb.pp("model"), scale).unwrap();
+        let neck = Neck::load(vb.pp("model"), scale).unwrap();
+        let head = Detect::load(vb.pp("model").pp("23"), &scale.head_input_channels(), NC).unwrap();
+        let model = Yolo26Model::new_from_parts(backbone, neck, head);
         let x = Tensor::zeros((1, 3, 640, 640), DType::F32, &device).unwrap();
         let out = model.forward(&x).unwrap();
         assert_eq!(out.dims(), &[1, 300, 6]);

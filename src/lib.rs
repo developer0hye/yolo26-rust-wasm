@@ -2,31 +2,36 @@ pub mod model;
 pub mod postprocess;
 pub mod preprocess;
 
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
 use wasm_bindgen::prelude::*;
 
+use model::config::ModelScale;
 use model::Yolo26Model;
 use postprocess::{postprocess, DetectionResult};
 use preprocess::preprocess;
 
-static MODEL: OnceLock<Yolo26Model> = OnceLock::new();
+/// Mutex<Option<>> allows re-initialization when switching model scales.
+static MODEL: Mutex<Option<Yolo26Model>> = Mutex::new(None);
 
-/// Load SafeTensors model bytes into memory. Called once on page load.
+/// Load SafeTensors model bytes into memory.
+/// `model_name` identifies the scale: "yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x".
 #[wasm_bindgen]
-pub fn init_model(weights: &[u8]) -> Result<(), JsValue> {
+pub fn init_model(weights: &[u8], model_name: &str) -> Result<(), JsValue> {
     console_error_panic_hook::set_once();
+    let scale: ModelScale = ModelScale::from_model_name(model_name)
+        .ok_or_else(|| JsValue::from_str(&format!("Unknown model name: {model_name}")))?;
     let device = candle_core::Device::Cpu;
-    let model = Yolo26Model::load(weights.to_vec(), &device)
+    let loaded_model: Yolo26Model = Yolo26Model::load(weights.to_vec(), &device, scale)
         .map_err(|e| JsValue::from_str(&format!("Failed to load model: {e}")))?;
-    MODEL
-        .set(model)
-        .map_err(|_| JsValue::from_str("Model already initialized"))?;
+    let mut guard = MODEL
+        .lock()
+        .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+    *guard = Some(loaded_model);
     Ok(())
 }
 
 /// Run inference on RGBA pixels. Returns JSON string with detections.
-/// The HTML demo passes confidence_threshold=0.0 and filters in JS.
 #[wasm_bindgen]
 pub fn detect(
     pixels: &[u8],
@@ -34,8 +39,11 @@ pub fn detect(
     height: u32,
     confidence_threshold: f32,
 ) -> Result<String, JsValue> {
-    let model: &Yolo26Model = MODEL
-        .get()
+    let guard = MODEL
+        .lock()
+        .map_err(|e| JsValue::from_str(&format!("Lock error: {e}")))?;
+    let model: &Yolo26Model = guard
+        .as_ref()
         .ok_or_else(|| JsValue::from_str("Model not loaded yet"))?;
     let device = candle_core::Device::Cpu;
 
@@ -70,6 +78,7 @@ pub fn detect(
 mod tests {
     use candle_core::{DType, Device, Tensor};
 
+    use crate::model::config::ModelScale;
     use crate::model::Yolo26Model;
     use crate::postprocess::postprocess;
     use crate::preprocess::preprocess;
@@ -80,12 +89,16 @@ mod tests {
         let device = Device::Cpu;
         let varmap = candle_nn::VarMap::new();
         let vb = candle_nn::VarBuilder::from_varmap(&varmap, DType::F32, &device);
+        let scale = ModelScale::N;
 
-        // Build model from VarMap (random weights)
-        let backbone = crate::model::backbone::Backbone::load(vb.pp("model")).unwrap();
-        let neck = crate::model::neck::Neck::load(vb.pp("model")).unwrap();
-        let head =
-            crate::model::head::Detect::load(vb.pp("model").pp("23"), &[64, 128, 256], 80).unwrap();
+        let backbone = crate::model::backbone::Backbone::load(vb.pp("model"), scale).unwrap();
+        let neck = crate::model::neck::Neck::load(vb.pp("model"), scale).unwrap();
+        let head = crate::model::head::Detect::load(
+            vb.pp("model").pp("23"),
+            &scale.head_input_channels(),
+            80,
+        )
+        .unwrap();
         let model = Yolo26Model::new_from_parts(backbone, neck, head);
 
         // Synthetic 100x75 RGBA image
@@ -100,7 +113,6 @@ mod tests {
         assert_eq!(output.dims(), &[1, 300, 6]);
 
         let dets = postprocess(&output, &letterbox, width, height, 0.5).unwrap();
-        // With random weights, detections may or may not pass threshold — just verify no crash
         assert!(dets.len() <= 300);
     }
 }

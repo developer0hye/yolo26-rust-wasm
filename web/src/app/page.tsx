@@ -7,9 +7,18 @@ import { ConfidenceSlider } from "@/components/confidence-slider";
 import { DetectionCanvas } from "@/components/detection-canvas";
 import { DetectionList } from "@/components/detection-list";
 import { InferenceClient } from "@/lib/worker-client";
-import type { DetectionResult, ModelStatus } from "@/lib/types";
+import type { DetectionResult, ModelName, ModelStatus } from "@/lib/types";
+
+const MODEL_OPTIONS: ModelName[] = [
+  "yolo26n",
+  "yolo26s",
+  "yolo26m",
+  "yolo26l",
+  "yolo26x",
+];
 
 export default function Home() {
+  const [selectedModel, setSelectedModel] = useState<ModelName>("yolo26n");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("Loading...");
   const [currentImage, setCurrentImage] = useState<HTMLImageElement | null>(
@@ -20,31 +29,104 @@ export default function Home() {
   );
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.25);
   const clientRef = useRef<InferenceClient | null>(null);
+  const currentImageRef = useRef<HTMLImageElement | null>(null);
+  const thresholdRef = useRef(confidenceThreshold);
+  thresholdRef.current = confidenceThreshold;
 
-  useEffect(() => {
-    const client = new InferenceClient();
-    clientRef.current = client;
+  const runDetectionOnImage = useCallback(
+    async (image: HTMLImageElement) => {
+      if (!clientRef.current) return;
+      const canvas: HTMLCanvasElement = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx: CanvasRenderingContext2D | null = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(image, 0, 0);
+      const imageData: ImageData = ctx.getImageData(
+        0,
+        0,
+        image.width,
+        image.height
+      );
+      const pixels: Uint8Array = new Uint8Array(imageData.data.buffer);
 
-    client
-      .initialize((stage, message) => {
-        setStatusMessage(message);
-        if (stage === "weights") setModelStatus("loading-weights");
-        else if (stage === "wasm") setModelStatus("loading-wasm");
-        else if (stage === "model") setModelStatus("initializing-model");
-      })
-      .then((sizeMB) => {
+      setCachedResult(null);
+      setModelStatus("detecting");
+      setStatusMessage("Detecting objects...");
+
+      try {
+        const result: DetectionResult = await clientRef.current.detect(
+          pixels,
+          image.width,
+          image.height,
+          0.0
+        );
+        setCachedResult(result);
+        const count: number = result.detections.filter(
+          (d) => d.confidence >= thresholdRef.current
+        ).length;
         setModelStatus("ready");
         setStatusMessage(
-          `Model loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+          `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`
         );
-      })
-      .catch((err) => {
+      } catch (err: unknown) {
         setModelStatus("error");
-        setStatusMessage(`Failed to load model: ${err}`);
-      });
+        setStatusMessage(`Detection failed: ${err}`);
+      }
+    },
+    []
+  );
 
-    return () => client.terminate();
+  const loadModel = useCallback(
+    (modelName: ModelName) => {
+      const client = clientRef.current ?? new InferenceClient();
+      clientRef.current = client;
+
+      setModelStatus("idle");
+      setStatusMessage(`Loading ${modelName}...`);
+
+      client
+        .initialize(modelName, (stage, message) => {
+          setStatusMessage(message);
+          if (stage === "weights") setModelStatus("loading-weights");
+          else if (stage === "wasm") setModelStatus("loading-wasm");
+          else if (stage === "model") setModelStatus("initializing-model");
+        })
+        .then((sizeMB) => {
+          const image: HTMLImageElement | null = currentImageRef.current;
+          if (image) {
+            // Re-run detection on the current image with the new model
+            runDetectionOnImage(image);
+          } else {
+            setModelStatus("ready");
+            setStatusMessage(
+              `${modelName} loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+            );
+          }
+        })
+        .catch((err) => {
+          setModelStatus("error");
+          setStatusMessage(`Failed to load model: ${err}`);
+        });
+    },
+    [runDetectionOnImage]
+  );
+
+  useEffect(() => {
+    loadModel(selectedModel);
+    return () => clientRef.current?.terminate();
+    // Only run on mount — model switching is handled by handleModelChange
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const handleModelChange = useCallback(
+    (modelName: ModelName) => {
+      setSelectedModel(modelName);
+      setCachedResult(null);
+      loadModel(modelName);
+    },
+    [loadModel]
+  );
 
   const handleImageSelected = useCallback(
     async (file: File) => {
@@ -89,27 +171,10 @@ export default function Home() {
       });
 
       setCurrentImage(displayImg);
-      setModelStatus("detecting");
-      setStatusMessage("Detecting objects...");
-
-      clientRef.current!
-        .detect(pixels, w, h, 0.0)
-        .then((result: DetectionResult) => {
-          setCachedResult(result);
-          const count: number = result.detections.filter(
-            (d) => d.confidence >= confidenceThreshold
-          ).length;
-          setModelStatus("ready");
-          setStatusMessage(
-            `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`
-          );
-        })
-        .catch((err: unknown) => {
-          setModelStatus("error");
-          setStatusMessage(`Detection failed: ${err}`);
-        });
+      currentImageRef.current = displayImg;
+      runDetectionOnImage(displayImg);
     },
-    [modelStatus, confidenceThreshold]
+    [modelStatus, runDetectionOnImage]
   );
 
   const handleThresholdChange = useCallback(
@@ -143,6 +208,13 @@ export default function Home() {
 
       {/* Controls bar */}
       <div className="mt-5 flex h-10 shrink-0 items-center gap-4">
+        <ModelSelector
+          value={selectedModel}
+          onChange={handleModelChange}
+          isDisabled={
+            modelStatus !== "ready" && modelStatus !== "error"
+          }
+        />
         <StatusBanner status={modelStatus} message={statusMessage} />
         <ImageDropzone
           onImageSelected={handleImageSelected}
@@ -178,6 +250,31 @@ export default function Home() {
         />
       </div>
     </main>
+  );
+}
+
+function ModelSelector({
+  value,
+  onChange,
+  isDisabled,
+}: {
+  value: ModelName;
+  onChange: (model: ModelName) => void;
+  isDisabled: boolean;
+}) {
+  return (
+    <select
+      value={value}
+      onChange={(e) => onChange(e.target.value as ModelName)}
+      disabled={isDisabled}
+      className="h-full rounded-lg border border-[#e2e6eb] bg-white px-3 text-[14px] font-medium text-[#0e1726] transition-colors hover:border-[#1a4a8f] focus:border-[#1a4a8f] focus:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+    >
+      {MODEL_OPTIONS.map((m) => (
+        <option key={m} value={m}>
+          {m.toUpperCase()}
+        </option>
+      ))}
+    </select>
   );
 }
 
