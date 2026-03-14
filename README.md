@@ -1,23 +1,23 @@
 # YOLO26 Rust WASM
 
-Real-time object detection running entirely in the browser — no server, no upload, no API calls. The YOLO26n model is implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
+Real-time object detection running entirely in the browser — no server, no upload, no API calls. All YOLO26 model sizes (Nano/Small/Medium/Large/XLarge) are implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
 
 ![Demo](assets/demo.png)
 
 ## Why This Exists
 
-Most browser-based ML demos rely on ONNX Runtime or TensorFlow.js. This project takes a different approach: the entire YOLO26n architecture is implemented from scratch in Rust and compiled to WASM. Every layer — convolutions, batch norm, attention, detect head — runs as native Rust code in the browser.
+Most browser-based ML demos rely on ONNX Runtime or TensorFlow.js. This project takes a different approach: the entire YOLO26 architecture (all 5 sizes) is implemented from scratch in Rust and compiled to WASM. Every layer — convolutions, batch norm, attention, detect head — runs as native Rust code in the browser.
 
 This means:
 
 - **Zero server dependency** — inference happens on the client. No data leaves the browser.
 - **No runtime framework** — no ONNX, no TF.js. Just Rust → WASM → Canvas.
-- **Portable** — one 1.2 MB `.wasm` binary + 5 MB SafeTensors weights. Works anywhere WebAssembly runs.
+- **Portable** — one 1.2 MB `.wasm` binary + SafeTensors weights (5–226 MB depending on size). Works anywhere WebAssembly runs.
 
 ## Features
 
-- YOLO26n model (2.4M params) natively implemented in Rust
-- SafeTensors weight loading (~5 MB FP16)
+- All YOLO26 sizes (n/s/m/l/x) with in-browser model switching
+- SafeTensors weight loading (FP16)
 - WASM SIMD128 acceleration for vectorized matrix operations
 - Web Worker inference (non-blocking UI)
 - EXIF-aware image handling for correct orientation
@@ -82,8 +82,8 @@ Open http://localhost:3000.
 ## WASM API
 
 ```rust
-// Load SafeTensors model (called once)
-init_model(weights: &[u8]) -> Result<(), JsValue>
+// Load SafeTensors model for a given size ("n", "s", "m", "l", "x")
+init_model(weights: &[u8], model_size: &str) -> Result<(), JsValue>
 
 // Run detection on RGBA pixels
 detect(pixels: &[u8], width: u32, height: u32, confidence_threshold: f32) -> Result<String, JsValue>
