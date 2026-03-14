@@ -505,3 +505,115 @@ fn export_rust_detections() {
         eprintln!("[{image_id}] Saved {} detections", rust_dets.len());
     }
 }
+
+/// Compare Rust preprocessing (bilinear) vs Python preprocessing (cv2.INTER_LINEAR)
+/// by computing PSNR between the two tensors for each COCO image.
+#[test]
+#[ignore]
+fn test_preprocessing_psnr() {
+    if !fixtures_available() {
+        eprintln!("Skipping: fixtures not available.");
+        return;
+    }
+
+    let device: Device = Device::Cpu;
+    let mut psnr_values: Vec<(String, f32)> = Vec::new();
+
+    eprintln!("\n{:=<80}", "");
+    eprintln!("Preprocessing PSNR: Rust (bilinear) vs Python (cv2.INTER_LINEAR)");
+    eprintln!("{:=<80}", "");
+
+    for image_id in &COCO_IMAGE_IDS {
+        let rgba_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_rgba.bin");
+        let input_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_input.safetensors");
+        let metadata_path: String = format!("{COCO_FIXTURES_DIR}/{image_id}_metadata.json");
+
+        if !Path::new(&rgba_path).exists()
+            || !Path::new(&input_path).exists()
+            || !Path::new(&metadata_path).exists()
+        {
+            continue;
+        }
+
+        let metadata_str: String = std::fs::read_to_string(&metadata_path).unwrap();
+        let metadata: serde_json::Value = serde_json::from_str(&metadata_str).unwrap();
+        let width: u32 = metadata["width"].as_u64().unwrap() as u32;
+        let height: u32 = metadata["height"].as_u64().unwrap() as u32;
+
+        // Rust preprocessing
+        let rgba_bytes: Vec<u8> = std::fs::read(&rgba_path).unwrap();
+        let (rust_tensor, _) =
+            yolo26_rust_wasm::preprocess::preprocess(&rgba_bytes, width, height, &device).unwrap();
+
+        // Python cv2 preprocessing
+        let python_tensors = candle_core::safetensors::load(&input_path, &device).unwrap();
+        let python_tensor: &Tensor = python_tensors.get("input").expect("missing 'input' key");
+
+        // Compute MSE and PSNR
+        let diff: Tensor = (&rust_tensor - python_tensor).unwrap();
+        let sq_diff: Tensor = (&diff * &diff).unwrap();
+        let mse: f32 = sq_diff.mean_all().unwrap().to_scalar::<f32>().unwrap();
+
+        // PSNR = 10 * log10(MAX^2 / MSE), MAX=1.0 for [0,1] normalized tensors
+        let psnr: f32 = if mse > 0.0 {
+            10.0 * (1.0 / mse).log10()
+        } else {
+            f32::INFINITY
+        };
+
+        // Also compute max absolute difference
+        let abs_diff: Tensor = diff.abs().unwrap();
+        let max_diff: f32 = abs_diff
+            .max(0)
+            .unwrap()
+            .max(0)
+            .unwrap()
+            .max(0)
+            .unwrap()
+            .max(0)
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+
+        // Count differing pixels (diff > 1/255)
+        let threshold: f32 = 1.0 / 255.0;
+        let above_thresh: Tensor = abs_diff.gt(threshold as f64).unwrap();
+        let num_diff_pixels: f32 = above_thresh
+            .to_dtype(candle_core::DType::F32)
+            .unwrap()
+            .sum_all()
+            .unwrap()
+            .to_scalar::<f32>()
+            .unwrap();
+        let total_pixels: f32 = (3 * 640 * 640) as f32;
+        let diff_pct: f32 = num_diff_pixels / total_pixels * 100.0;
+
+        eprintln!(
+            "[{image_id}] PSNR={psnr:6.2} dB | max_diff={max_diff:.6} | diff_pixels={diff_pct:.2}% ({num_diff_pixels:.0}/{total_pixels:.0})"
+        );
+
+        psnr_values.push((image_id.to_string(), psnr));
+    }
+
+    // Summary statistics
+    let mut psnrs: Vec<f32> = psnr_values.iter().map(|(_, p)| *p).collect();
+    psnrs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    let min_psnr: f32 = psnrs[0];
+    let max_psnr: f32 = psnrs[psnrs.len() - 1];
+    let median_psnr: f32 = psnrs[psnrs.len() / 2];
+    let avg_psnr: f32 = psnrs.iter().sum::<f32>() / psnrs.len() as f32;
+
+    eprintln!("{:=<80}", "");
+    eprintln!("PSNR Summary ({} images):", psnrs.len());
+    eprintln!("  Min:    {min_psnr:.2} dB");
+    eprintln!("  Max:    {max_psnr:.2} dB");
+    eprintln!("  Median: {median_psnr:.2} dB");
+    eprintln!("  Avg:    {avg_psnr:.2} dB");
+    eprintln!("{:=<80}", "");
+
+    // PSNR > 30 dB is generally considered good quality
+    assert!(
+        min_psnr > 30.0,
+        "Minimum PSNR {min_psnr:.2} dB is below 30 dB threshold"
+    );
+}
