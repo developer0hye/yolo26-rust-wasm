@@ -114,6 +114,7 @@ export default function Home() {
         }, "image/jpeg", 0.92);
       });
 
+      setCachedResult(null);
       setCurrentImage(displayImg);
       setModelStatus("detecting");
       setStatusMessage("Detecting objects...");
