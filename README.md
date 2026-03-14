@@ -2,6 +2,8 @@
 
 Real-time object detection running entirely in the browser — no server, no upload, no API calls. All YOLO26 model scales (n/s/m/l/x) are implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
 
+**[Live Demo on Hugging Face Spaces](https://huggingface.co/spaces/developer0hye/candle-yolo26)**
+
 ![Demo](assets/demo.png)
 
 ## Why This Exists
