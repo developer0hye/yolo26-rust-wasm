@@ -87,6 +87,9 @@ export function DetectionCanvas({
         onClick={handleCanvasClick}
       >
         <canvas ref={canvasRef} className="block" />
+        <span className="pointer-events-none absolute top-3 left-3 rounded-md bg-black/50 px-2.5 py-1 text-[12px] tabular-nums font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
+          {image.naturalWidth}×{image.naturalHeight}
+        </span>
         <span className="pointer-events-none absolute bottom-3 right-3 rounded-md bg-black/50 px-2.5 py-1 text-[12px] font-medium text-white opacity-0 transition-opacity group-hover:opacity-100">
           Click for full resolution
         </span>
