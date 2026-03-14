@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>YOLO26 Rust WASM Demo</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f5f5f5; color: #333; line-height: 1.5;
+    }
+    .container {
+      max-width: 900px; margin: 0 auto; padding: 20px;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    .subtitle { color: #666; font-size: 0.9rem; margin-bottom: 16px; }
+    #status {
+      padding: 10px 14px; border-radius: 6px; margin-bottom: 16px;
+      background: #e8f0fe; color: #1a73e8; font-size: 0.9rem;
+    }
+    #status.error { background: #fce8e6; color: #d93025; }
+    #status.success { background: #e6f4ea; color: #137333; }
+    .controls {
+      display: flex; gap: 12px; align-items: center; flex-wrap: wrap; margin-bottom: 16px;
+    }
+    .file-input-wrapper {
+      position: relative; display: inline-block;
+    }
+    .file-input-wrapper input[type="file"] {
+      position: absolute; opacity: 0; width: 100%; height: 100%; cursor: pointer;
+    }
+    .file-input-btn {
+      display: inline-block; padding: 8px 16px; background: #1a73e8; color: #fff;
+      border-radius: 6px; font-size: 0.9rem; cursor: pointer;
+    }
+    .file-input-btn:hover { background: #1557b0; }
+    .slider-group {
+      display: flex; align-items: center; gap: 8px; font-size: 0.9rem;
+    }
+    .slider-group input[type="range"] { width: 160px; }
+    #drop-zone {
+      border: 2px dashed #ccc; border-radius: 8px; padding: 24px; text-align: center;
+      color: #999; font-size: 0.9rem; margin-bottom: 16px; transition: all 0.2s;
+    }
+    #drop-zone.dragover { border-color: #1a73e8; background: #e8f0fe; color: #1a73e8; }
+    .canvas-wrapper {
+      position: relative; background: #fff; border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12); overflow: hidden; margin-bottom: 16px;
+    }
+    #canvas { display: block; max-width: 100%; height: auto; }
+    .detection-list {
+      background: #fff; border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+      overflow: hidden;
+    }
+    .detection-list-header {
+      padding: 10px 14px; background: #fafafa; border-bottom: 1px solid #eee;
+      font-weight: 600; font-size: 0.85rem;
+    }
+    .detection-list-body {
+      max-height: 300px; overflow-y: auto;
+    }
+    .detection-row {
+      display: flex; gap: 12px; padding: 8px 14px; border-bottom: 1px solid #f0f0f0;
+      font-size: 0.85rem; align-items: center;
+    }
+    .detection-row:last-child { border-bottom: none; }
+    .det-color { width: 12px; height: 12px; border-radius: 2px; flex-shrink: 0; }
+    .det-class { font-weight: 500; min-width: 100px; }
+    .det-conf { color: #666; min-width: 50px; }
+    .det-pos { color: #999; }
+    @media (max-width: 768px) {
+      .container { padding: 12px; }
+      .controls { flex-direction: column; align-items: stretch; }
+      .slider-group input[type="range"] { width: 100%; flex: 1; }
+      .detection-list-body { max-height: 200px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>YOLO26 Rust WASM Demo</h1>
+    <p class="subtitle">Browser-based object detection powered by Rust + WebAssembly</p>
+
+    <div id="status">Loading WASM module...</div>
+
+    <div class="controls">
+      <div class="file-input-wrapper">
+        <span class="file-input-btn">Select Image</span>
+        <input type="file" id="file-input" accept="image/*" disabled>
+      </div>
+      <div class="slider-group">
+        <label for="conf-slider">Confidence:</label>
+        <input type="range" id="conf-slider" min="0.05" max="1.0" step="0.05" value="0.25">
+        <span id="conf-val">0.25</span>
+      </div>
+    </div>
+
+    <div id="drop-zone">Drop an image here, or use the button above</div>
+
+    <div class="canvas-wrapper" id="canvas-wrapper" style="display:none;">
+      <canvas id="canvas"></canvas>
+    </div>
+
+    <div class="detection-list" id="detection-list" style="display:none;">
+      <div class="detection-list-header" id="detection-header"></div>
+      <div class="detection-list-body" id="detection-body"></div>
+    </div>
+  </div>
+
+  <script type="module">
+    import init, { init_model, detect } from './pkg/yolo26_rust_wasm.js';
+
+    const statusEl = document.getElementById('status');
+    const fileInput = document.getElementById('file-input');
+    const dropZone = document.getElementById('drop-zone');
+    const confSlider = document.getElementById('conf-slider');
+    const confVal = document.getElementById('conf-val');
+    const canvas = document.getElementById('canvas');
+    const canvasWrapper = document.getElementById('canvas-wrapper');
+    const detectionList = document.getElementById('detection-list');
+    const detectionHeader = document.getElementById('detection-header');
+    const detectionBody = document.getElementById('detection-body');
+    const ctx = canvas.getContext('2d');
+
+    let cachedResult = null;
+    let currentImage = null;
+
+    function setStatus(msg, type = '') {
+      statusEl.textContent = msg;
+      statusEl.className = type;
+    }
+
+    function classColor(classId) {
+      const hue = (classId * 137.5) % 360;
+      return `hsl(${hue}, 70%, 50%)`;
+    }
+
+    function renderDetections(threshold) {
+      if (!cachedResult || !currentImage) return;
+
+      // Draw original image
+      canvas.width = currentImage.width;
+      canvas.height = currentImage.height;
+      ctx.drawImage(currentImage, 0, 0);
+
+      const filtered = cachedResult.detections.filter(d => d.confidence >= threshold);
+
+      // Draw bounding boxes
+      for (const d of filtered) {
+        const color = classColor(d.class_id);
+        // Box fill
+        ctx.fillStyle = color.replace('50%)', '50% / 0.15)').replace('hsl', 'hsla');
+        ctx.fillRect(d.x, d.y, d.width, d.height);
+        // Box stroke
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 2;
+        ctx.strokeRect(d.x, d.y, d.width, d.height);
+        // Label
+        const label = `${d.class_name} ${(d.confidence * 100).toFixed(0)}%`;
+        ctx.font = '14px -apple-system, sans-serif';
+        const tw = ctx.measureText(label).width;
+        const lx = d.x;
+        const ly = d.y > 20 ? d.y - 4 : d.y + d.height + 16;
+        ctx.fillStyle = color;
+        ctx.fillRect(lx, ly - 14, tw + 8, 18);
+        ctx.fillStyle = '#fff';
+        ctx.fillText(label, lx + 4, ly);
+      }
+
+      canvasWrapper.style.display = 'block';
+
+      // Update detection list
+      detectionHeader.textContent = `Detected ${filtered.length} objects in ${cachedResult.inference_time_ms.toFixed(0)}ms`;
+      detectionBody.innerHTML = '';
+      for (const [i, d] of filtered.entries()) {
+        const row = document.createElement('div');
+        row.className = 'detection-row';
+        row.innerHTML = `
+          <span class="det-color" style="background:${classColor(d.class_id)}"></span>
+          <span class="det-class">${d.class_name}</span>
+          <span class="det-conf">${(d.confidence * 100).toFixed(1)}%</span>
+          <span class="det-pos">(${d.x.toFixed(0)}, ${d.y.toFixed(0)}, ${d.width.toFixed(0)}×${d.height.toFixed(0)})</span>
+        `;
+        detectionBody.appendChild(row);
+      }
+      detectionList.style.display = 'block';
+    }
+
+    function processImage(img) {
+      currentImage = img;
+
+      // Resize if too large (max 4096px on any side)
+      let w = img.width, h = img.height;
+      const MAX = 4096;
+      if (w > MAX || h > MAX) {
+        const scale = MAX / Math.max(w, h);
+        w = Math.round(w * scale);
+        h = Math.round(h * scale);
+      }
+
+      // Get RGBA pixels via offscreen canvas
+      const offscreen = document.createElement('canvas');
+      offscreen.width = w;
+      offscreen.height = h;
+      const offCtx = offscreen.getContext('2d');
+      offCtx.drawImage(img, 0, 0, w, h);
+      const imageData = offCtx.getImageData(0, 0, w, h);
+
+      setStatus('Detecting...');
+      try {
+        const jsonStr = detect(imageData.data, w, h, 0.0);
+        cachedResult = JSON.parse(jsonStr);
+        renderDetections(parseFloat(confSlider.value));
+        setStatus(
+          `Detected ${cachedResult.detections.filter(d => d.confidence >= parseFloat(confSlider.value)).length} objects in ${cachedResult.inference_time_ms.toFixed(0)}ms`,
+          'success'
+        );
+      } catch (e) {
+        setStatus(`Detection failed: ${e}`, 'error');
+      }
+    }
+
+    function handleFile(file) {
+      if (!file || !file.type.startsWith('image/')) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const img = new Image();
+        img.onload = () => processImage(img);
+        img.src = e.target.result;
+      };
+      reader.readAsDataURL(file);
+    }
+
+    // Event listeners
+    fileInput.addEventListener('change', (e) => {
+      if (e.target.files[0]) handleFile(e.target.files[0]);
+    });
+
+    dropZone.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      dropZone.classList.add('dragover');
+    });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('dragover');
+      if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
+    });
+
+    confSlider.addEventListener('input', () => {
+      confVal.textContent = parseFloat(confSlider.value).toFixed(2);
+      renderDetections(parseFloat(confSlider.value));
+      if (cachedResult) {
+        const threshold = parseFloat(confSlider.value);
+        const count = cachedResult.detections.filter(d => d.confidence >= threshold).length;
+        setStatus(`Detected ${count} objects in ${cachedResult.inference_time_ms.toFixed(0)}ms`, 'success');
+      }
+    });
+
+    // Initialize
+    async function setup() {
+      try {
+        await init();
+        setStatus('Fetching model weights...');
+
+        const resp = await fetch('weights/yolo26n.safetensors');
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+
+        const bytes = new Uint8Array(await resp.arrayBuffer());
+        setStatus('Initializing model...');
+        init_model(bytes);
+
+        const sizeMB = (bytes.length / 1e6).toFixed(1);
+        setStatus(`Model loaded (${sizeMB} MB). Select or drop an image to detect objects.`, 'success');
+        fileInput.disabled = false;
+      } catch (e) {
+        setStatus(`Failed to load model: ${e}`, 'error');
+      }
+    }
+    setup();
+  </script>
+</body>
+</html>
