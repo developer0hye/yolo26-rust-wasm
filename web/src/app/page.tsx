@@ -29,32 +29,88 @@ export default function Home() {
   );
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.25);
   const clientRef = useRef<InferenceClient | null>(null);
+  const currentImageRef = useRef<HTMLImageElement | null>(null);
+  const thresholdRef = useRef(confidenceThreshold);
+  thresholdRef.current = confidenceThreshold;
 
-  const loadModel = useCallback((modelName: ModelName) => {
-    const client = clientRef.current ?? new InferenceClient();
-    clientRef.current = client;
+  const runDetectionOnImage = useCallback(
+    async (image: HTMLImageElement) => {
+      if (!clientRef.current) return;
+      const canvas: HTMLCanvasElement = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx: CanvasRenderingContext2D | null = canvas.getContext("2d");
+      if (!ctx) return;
+      ctx.drawImage(image, 0, 0);
+      const imageData: ImageData = ctx.getImageData(
+        0,
+        0,
+        image.width,
+        image.height
+      );
+      const pixels: Uint8Array = new Uint8Array(imageData.data.buffer);
 
-    setModelStatus("idle");
-    setStatusMessage(`Loading ${modelName}...`);
+      setCachedResult(null);
+      setModelStatus("detecting");
+      setStatusMessage("Detecting objects...");
 
-    client
-      .initialize(modelName, (stage, message) => {
-        setStatusMessage(message);
-        if (stage === "weights") setModelStatus("loading-weights");
-        else if (stage === "wasm") setModelStatus("loading-wasm");
-        else if (stage === "model") setModelStatus("initializing-model");
-      })
-      .then((sizeMB) => {
+      try {
+        const result: DetectionResult = await clientRef.current.detect(
+          pixels,
+          image.width,
+          image.height,
+          0.0
+        );
+        setCachedResult(result);
+        const count: number = result.detections.filter(
+          (d) => d.confidence >= thresholdRef.current
+        ).length;
         setModelStatus("ready");
         setStatusMessage(
-          `${modelName} loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+          `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`
         );
-      })
-      .catch((err) => {
+      } catch (err: unknown) {
         setModelStatus("error");
-        setStatusMessage(`Failed to load model: ${err}`);
-      });
-  }, []);
+        setStatusMessage(`Detection failed: ${err}`);
+      }
+    },
+    []
+  );
+
+  const loadModel = useCallback(
+    (modelName: ModelName) => {
+      const client = clientRef.current ?? new InferenceClient();
+      clientRef.current = client;
+
+      setModelStatus("idle");
+      setStatusMessage(`Loading ${modelName}...`);
+
+      client
+        .initialize(modelName, (stage, message) => {
+          setStatusMessage(message);
+          if (stage === "weights") setModelStatus("loading-weights");
+          else if (stage === "wasm") setModelStatus("loading-wasm");
+          else if (stage === "model") setModelStatus("initializing-model");
+        })
+        .then((sizeMB) => {
+          const image: HTMLImageElement | null = currentImageRef.current;
+          if (image) {
+            // Re-run detection on the current image with the new model
+            runDetectionOnImage(image);
+          } else {
+            setModelStatus("ready");
+            setStatusMessage(
+              `${modelName} loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+            );
+          }
+        })
+        .catch((err) => {
+          setModelStatus("error");
+          setStatusMessage(`Failed to load model: ${err}`);
+        });
+    },
+    [runDetectionOnImage]
+  );
 
   useEffect(() => {
     loadModel(selectedModel);
@@ -114,29 +170,11 @@ export default function Home() {
         }, "image/jpeg", 0.92);
       });
 
-      setCachedResult(null);
       setCurrentImage(displayImg);
-      setModelStatus("detecting");
-      setStatusMessage("Detecting objects...");
-
-      clientRef.current!
-        .detect(pixels, w, h, 0.0)
-        .then((result: DetectionResult) => {
-          setCachedResult(result);
-          const count: number = result.detections.filter(
-            (d) => d.confidence >= confidenceThreshold
-          ).length;
-          setModelStatus("ready");
-          setStatusMessage(
-            `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`
-          );
-        })
-        .catch((err: unknown) => {
-          setModelStatus("error");
-          setStatusMessage(`Detection failed: ${err}`);
-        });
+      currentImageRef.current = displayImg;
+      runDetectionOnImage(displayImg);
     },
-    [modelStatus, confidenceThreshold]
+    [modelStatus, runDetectionOnImage]
   );
 
   const handleThresholdChange = useCallback(
