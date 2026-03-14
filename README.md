@@ -1,23 +1,24 @@
 # YOLO26 Rust WASM
 
-Real-time object detection running entirely in the browser — no server, no upload, no API calls. The YOLO26n model is implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
+Real-time object detection running entirely in the browser — no server, no upload, no API calls. All YOLO26 model scales (n/s/m/l/x) are implemented natively in Rust using [candle](https://github.com/huggingface/candle) and compiled to WebAssembly.
 
 ![Demo](assets/demo.png)
 
 ## Why This Exists
 
-Most browser-based ML demos rely on ONNX Runtime or TensorFlow.js. This project takes a different approach: the entire YOLO26n architecture is implemented from scratch in Rust and compiled to WASM. Every layer — convolutions, batch norm, attention, detect head — runs as native Rust code in the browser.
+Most browser-based ML demos rely on ONNX Runtime or TensorFlow.js. This project takes a different approach: the entire YOLO26 architecture is implemented from scratch in Rust and compiled to WASM. Every layer — convolutions, batch norm, attention, detect head — runs as native Rust code in the browser.
 
 This means:
 
 - **Zero server dependency** — inference happens on the client. No data leaves the browser.
 - **No runtime framework** — no ONNX, no TF.js. Just Rust → WASM → Canvas.
-- **Portable** — one 1.2 MB `.wasm` binary + 5 MB SafeTensors weights. Works anywhere WebAssembly runs.
+- **Portable** — one `.wasm` binary + SafeTensors weights. Works anywhere WebAssembly runs.
 
 ## Features
 
-- YOLO26n model (2.4M params) natively implemented in Rust
-- SafeTensors weight loading (~5 MB FP16)
+- All YOLO26 scales (n/s/m/l/x) natively implemented in Rust
+- In-browser model selector for switching between scales
+- SafeTensors weight loading
 - WASM SIMD128 acceleration for vectorized matrix operations
 - Web Worker inference (non-blocking UI)
 - EXIF-aware image handling for correct orientation
@@ -36,6 +37,7 @@ Browser (Next.js + Web Worker)
 Rust WASM Module (candle)
   ├── preprocess.rs    → Bilinear resize, letterbox 640×640, normalize, HWC→CHW
   ├── model/
+  │   ├── config.rs    → ModelScale (n/s/m/l/x) channel/repeat scaling
   │   ├── backbone.rs  → Conv, C3k2, SPPF, C2PSA (layers 0-10)
   │   ├── neck.rs      → FPN-PAN feature fusion (layers 11-22)
   │   └── head.rs      → Detect: end2end, topk-300, NMS-free (layer 23)
@@ -82,8 +84,9 @@ Open http://localhost:3000.
 ## WASM API
 
 ```rust
-// Load SafeTensors model (called once)
-init_model(weights: &[u8]) -> Result<(), JsValue>
+// Load SafeTensors model with scale identifier
+init_model(weights: &[u8], model_name: &str) -> Result<(), JsValue>
+// model_name: "yolo26n", "yolo26s", "yolo26m", "yolo26l", or "yolo26x"
 
 // Run detection on RGBA pixels
 detect(pixels: &[u8], width: u32, height: u32, confidence_threshold: f32) -> Result<String, JsValue>
@@ -95,7 +98,7 @@ detect(pixels: &[u8], width: u32, height: u32, confidence_threshold: f32) -> Res
 cargo test
 ```
 
-36 tests covering preprocessing, postprocessing, all building blocks (ConvBlock, Bottleneck, C3k2, C3k, SPPF, C2PSA, Attention), backbone, neck, detect head, and full pipeline.
+49 tests covering preprocessing, postprocessing, all building blocks (ConvBlock, Bottleneck, C3k2, C3k, SPPF, C2PSA, Attention), model scaling config, backbone, neck, detect head, and full pipeline across multiple scales.
 
 ## Acknowledgments
 
