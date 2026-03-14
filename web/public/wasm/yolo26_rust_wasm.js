@@ -2,7 +2,7 @@
 
 /**
  * Run inference on RGBA pixels. Returns JSON string with detections.
- * The HTML demo passes confidence_threshold=0.0 and filters in JS.
+ * The web app passes confidence_threshold=0.0 and filters in JS.
  * @param {Uint8Array} pixels
  * @param {number} width
  * @param {number} height
@@ -31,13 +31,18 @@ export function detect(pixels, width, height, confidence_threshold) {
 }
 
 /**
- * Load SafeTensors model bytes into memory. Called once on page load.
+ * Load SafeTensors model bytes into memory.
+ * `size` must be one of "n", "s", "m", "l", "x".
+ * Can be called multiple times to switch model sizes.
  * @param {Uint8Array} weights
+ * @param {string} size
  */
-export function init_model(weights) {
+export function init_model(weights, size) {
     const ptr0 = passArray8ToWasm0(weights, wasm.__wbindgen_malloc);
     const len0 = WASM_VECTOR_LEN;
-    const ret = wasm.init_model(ptr0, len0);
+    const ptr1 = passStringToWasm0(size, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.init_model(ptr0, len0, ptr1, len1);
     if (ret[1]) {
         throw takeFromExternrefTable0(ret[0]);
     }

@@ -6,27 +6,32 @@ import { ImageDropzone } from "@/components/image-dropzone";
 import { ConfidenceSlider } from "@/components/confidence-slider";
 import { DetectionCanvas } from "@/components/detection-canvas";
 import { DetectionList } from "@/components/detection-list";
+import { ModelSizeSelector } from "@/components/model-size-selector";
 import { InferenceClient } from "@/lib/worker-client";
-import type { DetectionResult, ModelStatus } from "@/lib/types";
+import type { DetectionResult, ModelSize, ModelStatus } from "@/lib/types";
 
 export default function Home() {
+  const [modelSize, setModelSize] = useState<ModelSize>("n");
   const [modelStatus, setModelStatus] = useState<ModelStatus>("idle");
   const [statusMessage, setStatusMessage] = useState("Loading...");
   const [currentImage, setCurrentImage] = useState<HTMLImageElement | null>(
-    null
+    null,
   );
   const [cachedResult, setCachedResult] = useState<DetectionResult | null>(
-    null
+    null,
   );
   const [confidenceThreshold, setConfidenceThreshold] = useState(0.25);
   const clientRef = useRef<InferenceClient | null>(null);
 
-  useEffect(() => {
-    const client = new InferenceClient();
+  const loadModel = useCallback((size: ModelSize) => {
+    const client = clientRef.current ?? new InferenceClient();
     clientRef.current = client;
 
+    setCachedResult(null);
+    setModelStatus("idle");
+
     client
-      .initialize((stage, message) => {
+      .initialize(size, (stage, message) => {
         setStatusMessage(message);
         if (stage === "weights") setModelStatus("loading-weights");
         else if (stage === "wasm") setModelStatus("loading-wasm");
@@ -35,16 +40,29 @@ export default function Home() {
       .then((sizeMB) => {
         setModelStatus("ready");
         setStatusMessage(
-          `Model loaded (${sizeMB} MB). Select or drop an image to detect objects.`
+          `YOLO26${size} loaded (${sizeMB} MB). Select or drop an image to detect objects.`,
         );
       })
       .catch((err) => {
         setModelStatus("error");
         setStatusMessage(`Failed to load model: ${err}`);
       });
-
-    return () => client.terminate();
   }, []);
+
+  useEffect(() => {
+    loadModel(modelSize);
+    return () => clientRef.current?.terminate();
+    // Only run on mount
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleModelSizeChange = useCallback(
+    (size: ModelSize) => {
+      setModelSize(size);
+      loadModel(size);
+    },
+    [loadModel],
+  );
 
   const handleImageSelected = useCallback(
     async (file: File) => {
@@ -78,30 +96,34 @@ export default function Home() {
 
       // Create EXIF-free display image from the normalized canvas pixels
       const displayImg: HTMLImageElement = await new Promise((resolve) => {
-        offscreen.toBlob((blob) => {
-          const img: HTMLImageElement = new Image();
-          img.onload = () => {
-            URL.revokeObjectURL(img.src);
-            resolve(img);
-          };
-          img.src = URL.createObjectURL(blob!);
-        }, "image/jpeg", 0.92);
+        offscreen.toBlob(
+          (blob) => {
+            const img: HTMLImageElement = new Image();
+            img.onload = () => {
+              URL.revokeObjectURL(img.src);
+              resolve(img);
+            };
+            img.src = URL.createObjectURL(blob!);
+          },
+          "image/jpeg",
+          0.92,
+        );
       });
 
       setCurrentImage(displayImg);
       setModelStatus("detecting");
       setStatusMessage("Detecting objects...");
 
-      clientRef.current!
-        .detect(pixels, w, h, 0.0)
+      clientRef
+        .current!.detect(pixels, w, h, 0.0)
         .then((result: DetectionResult) => {
           setCachedResult(result);
           const count: number = result.detections.filter(
-            (d) => d.confidence >= confidenceThreshold
+            (d) => d.confidence >= confidenceThreshold,
           ).length;
           setModelStatus("ready");
           setStatusMessage(
-            `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`
+            `${count} object${count !== 1 ? "s" : ""} detected in ${result.inference_time_ms.toFixed(0)}ms`,
           );
         })
         .catch((err: unknown) => {
@@ -109,7 +131,7 @@ export default function Home() {
           setStatusMessage(`Detection failed: ${err}`);
         });
     },
-    [modelStatus, confidenceThreshold]
+    [modelStatus, confidenceThreshold],
   );
 
   const handleThresholdChange = useCallback(
@@ -117,14 +139,14 @@ export default function Home() {
       setConfidenceThreshold(value);
       if (cachedResult) {
         const count = cachedResult.detections.filter(
-          (d) => d.confidence >= value
+          (d) => d.confidence >= value,
         ).length;
         setStatusMessage(
-          `${count} object${count !== 1 ? "s" : ""} detected in ${cachedResult.inference_time_ms.toFixed(0)}ms`
+          `${count} object${count !== 1 ? "s" : ""} detected in ${cachedResult.inference_time_ms.toFixed(0)}ms`,
         );
       }
     },
-    [cachedResult]
+    [cachedResult],
   );
 
   const isModelBusy = modelStatus !== "ready";
@@ -144,6 +166,11 @@ export default function Home() {
       {/* Controls bar */}
       <div className="mt-5 flex h-10 shrink-0 items-center gap-4">
         <StatusBanner status={modelStatus} message={statusMessage} />
+        <ModelSizeSelector
+          value={modelSize}
+          onChange={handleModelSizeChange}
+          isDisabled={isModelBusy}
+        />
         <ImageDropzone
           onImageSelected={handleImageSelected}
           isDisabled={isModelBusy}

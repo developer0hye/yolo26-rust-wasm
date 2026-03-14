@@ -1,3 +1,13 @@
+export type ModelSize = "n" | "s" | "m" | "l" | "x";
+
+export const MODEL_SIZE_LABELS: Record<ModelSize, string> = {
+  n: "Nano (n)",
+  s: "Small (s)",
+  m: "Medium (m)",
+  l: "Large (l)",
+  x: "XLarge (x)",
+};
+
 export interface Detection {
   x: number;
   y: number;
@@ -25,7 +35,7 @@ export type ModelStatus =
   | "error";
 
 export type WorkerRequest =
-  | { type: "init"; weightsBuffer: ArrayBuffer }
+  | { type: "init"; weightsBuffer: ArrayBuffer; modelSize: ModelSize }
   | {
       type: "detect";
       pixels: Uint8Array;

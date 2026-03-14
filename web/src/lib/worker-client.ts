@@ -1,20 +1,24 @@
-import type { DetectionResult, WorkerResponse } from "./types";
+import type { DetectionResult, ModelSize, WorkerResponse } from "./types";
 
 export type ProgressCallback = (stage: string, message: string) => void;
 
 export class InferenceClient {
   private worker: Worker | null = null;
 
-  async initialize(onProgress?: ProgressCallback): Promise<number> {
+  async initialize(
+    modelSize: ModelSize,
+    onProgress?: ProgressCallback,
+  ): Promise<number> {
     return new Promise((resolve, reject) => {
+      // Terminate existing worker if switching model sizes
+      this.worker?.terminate();
       this.worker = new Worker(
-        new URL("../workers/inference.worker.ts", import.meta.url)
+        new URL("../workers/inference.worker.ts", import.meta.url),
       );
 
-      // Fetch weights on main thread (enables future progress tracking)
-      onProgress?.("weights", "Fetching model weights...");
+      onProgress?.("weights", `Fetching yolo26${modelSize} weights...`);
 
-      fetch("/weights/yolo26n.safetensors")
+      fetch(`/weights/yolo26${modelSize}.safetensors`)
         .then((resp) => {
           if (!resp.ok)
             throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
@@ -37,10 +41,9 @@ export class InferenceClient {
           this.worker.onerror = (err) => reject(err);
 
           // Transfer the ArrayBuffer to the worker (zero-copy)
-          this.worker.postMessage(
-            { type: "init", weightsBuffer },
-            [weightsBuffer]
-          );
+          this.worker.postMessage({ type: "init", weightsBuffer, modelSize }, [
+            weightsBuffer,
+          ]);
         })
         .catch(reject);
     });
@@ -50,7 +53,7 @@ export class InferenceClient {
     pixels: Uint8Array,
     width: number,
     height: number,
-    confidenceThreshold: number
+    confidenceThreshold: number,
   ): Promise<DetectionResult> {
     return new Promise((resolve, reject) => {
       if (!this.worker) {
@@ -76,7 +79,7 @@ export class InferenceClient {
           height,
           confidenceThreshold,
         },
-        [pixels.buffer]
+        [pixels.buffer],
       );
     });
   }
